@@ -103,6 +103,9 @@ static void bind_symbols(DYNLIB_HANDLE h) {
         reinterpret_cast<PFN_glfwSetFramebufferSizeCallback>(gp("glfwSetFramebufferSizeCallback"));
     p_glfwGetFramebufferSize = reinterpret_cast<PFN_glfwGetFramebufferSize>(gp("glfwGetFramebufferSize"));
     p_glfwWaitEvents = reinterpret_cast<PFN_glfwWaitEvents>(gp("glfwWaitEvents"));
+    p_glfwGetWindowMonitor = reinterpret_cast<PFN_glfwGetWindowMonitor>(gp("glfwGetWindowMonitor"));
+    p_glfwGetPrimaryMonitor = reinterpret_cast<PFN_glfwGetPrimaryMonitor>(gp("glfwGetPrimaryMonitor"));
+    p_glfwGetVideoMode = reinterpret_cast<PFN_glfwGetVideoMode>(gp("glfwGetVideoMode"));
 }
 
 extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_initFolderPath(JNIEnv *env,

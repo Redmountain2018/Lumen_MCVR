@@ -25,6 +25,9 @@ struct Options {
     uint32_t ommBakerLevel = 4; // OMM baker max subdivision level (1-8)
     bool simplifiedIndirect = false; // Skip detail textures on indirect bounces + simplify shadow AHS
     bool outputScale2x = false;     // Render world at 2x display resolution, Lanczos 3 downscale
+    bool reflexEnabled = false;     // NVIDIA Reflex low-latency mode (VK_NV_low_latency2)
+    bool reflexBoost = false;       // Reflex Boost — raise GPU clocks during latency-sensitive work
+    bool vrrMode = false;           // VRR frame cap: 3600*Hz/(Hz+3600) via Reflex frameLimitUs
     uint32_t debugMode = 0;
     bool needRecreate = false;
 

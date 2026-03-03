@@ -5,6 +5,7 @@
 #include "core/render/chunks.hpp"
 #include "core/render/render_framework.hpp"
 #include "core/render/renderer.hpp"
+#include "core/render/streamline_context.hpp"
 #include "core/render/textures.hpp"
 #include "core/render/world.hpp"
 
@@ -250,6 +251,84 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_radiance_client_option_Options_na
     }
 
     return framework->swapchain()->isHDRSupported() ? JNI_TRUE : JNI_FALSE;
+}
+
+// --- NVIDIA Reflex + VRR helpers ---
+
+static int getDisplayRefreshRate() {
+    auto *renderer = Renderer::try_instance();
+    if (!renderer) return 0;
+    auto fw = renderer->framework();
+    if (!fw) return 0;
+    auto window = fw->window();
+    if (!window) return 0;
+
+    GLFWmonitor *monitor = GLFW_GetWindowMonitor(window->window());
+    if (!monitor) monitor = GLFW_GetPrimaryMonitor();
+    if (!monitor) return 0;
+
+    const GLFWvidmode *mode = GLFW_GetVideoMode(monitor);
+    return mode ? mode->refreshRate : 0;
+}
+
+// Shared helper: pushes current reflexEnabled/reflexBoost/vrrMode to Streamline.
+// Called whenever any of the three toggles change.
+static void applyReflexSettings() {
+    if (!StreamlineContext::isReflexAvailable()) return;
+
+    sl::ReflexMode mode = sl::ReflexMode::eOff;
+    if (Renderer::options.reflexEnabled) {
+        mode = Renderer::options.reflexBoost
+            ? sl::ReflexMode::eLowLatencyWithBoost
+            : sl::ReflexMode::eLowLatency;
+    }
+
+    uint32_t frameLimitUs = 0;
+    if (Renderer::options.vrrMode && Renderer::options.reflexEnabled) {
+        // VRR cap formula: targetFps = 3600 * Hz / (Hz + 3600)
+        // For 240 Hz → 225 fps, for 144 Hz → 138 fps, for 60 Hz → 59 fps
+        int hz = getDisplayRefreshRate();
+        if (hz > 0) {
+            uint32_t targetFps = (3600u * static_cast<uint32_t>(hz)) / (static_cast<uint32_t>(hz) + 3600u);
+            if (targetFps > 0) frameLimitUs = 1000000u / targetFps;
+        }
+    } else {
+        // Fall back to user's maxFps cap (if set)
+        uint32_t maxFps = Renderer::options.maxFps;
+        if (maxFps > 0 && maxFps < 1000000) {
+            frameLimitUs = 1000000 / maxFps;
+        }
+    }
+
+    StreamlineContext::setReflexOptions(mode, frameLimitUs);
+}
+
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetReflexEnabled(
+    JNIEnv *, jclass, jboolean enabled, jboolean write) {
+    Renderer::options.reflexEnabled = enabled;
+    applyReflexSettings();
+}
+
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetReflexBoost(
+    JNIEnv *, jclass, jboolean enabled, jboolean write) {
+    Renderer::options.reflexBoost = enabled;
+    applyReflexSettings();
+}
+
+extern "C" JNIEXPORT jboolean JNICALL Java_com_radiance_client_option_Options_nativeIsReflexSupported(
+    JNIEnv *, jclass) {
+    return StreamlineContext::isReflexAvailable() ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetVrrMode(
+    JNIEnv *, jclass, jboolean enabled, jboolean write) {
+    Renderer::options.vrrMode = enabled;
+    applyReflexSettings();
+}
+
+extern "C" JNIEXPORT jint JNICALL Java_com_radiance_client_option_Options_nativeGetDisplayRefreshRate(
+    JNIEnv *, jclass) {
+    return static_cast<jint>(getDisplayRefreshRate());
 }
 
 extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeRebuildChunks(
