@@ -388,7 +388,7 @@ void RayTracingModule::initDescriptorTables() {
                                   VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_ANY_HIT_BIT_KHR |
                                   VK_SHADER_STAGE_INTERSECTION_BIT_KHR,
                     .offset = 0,
-                    .size = sizeof(uint32_t),
+                    .size = sizeof(RayTracingPushConstant),
                 })
                 .build(framework->device());
     }
@@ -584,11 +584,15 @@ void RayTracingModuleContext::render() {
     rayTracingDescriptorTable->bindBuffer(buffers->lastWorldUniformBuffer(), 2, 1);
     rayTracingDescriptorTable->bindBuffer(buffers->skyUniformBuffer(), 2, 2);
 
+    RayTracingPushConstant pushConstant{};
+    pushConstant.numRayBounces = static_cast<int>(Renderer::options.rayBounces);
+    pushConstant.flags = Renderer::options.simplifiedIndirect ? 1 : 0;
+
     vkCmdPushConstants(worldCommandBuffer->vkCommandBuffer(), rayTracingDescriptorTable->vkPipelineLayout(),
                        VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR |
                            VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_ANY_HIT_BIT_KHR |
                            VK_SHADER_STAGE_INTERSECTION_BIT_KHR,
-                       0, sizeof(uint32_t), &Renderer::options.rayBounces);
+                       0, sizeof(RayTracingPushConstant), &pushConstant);
 
     auto chooseSrc = [](VkImageLayout oldLayout, VkPipelineStageFlags2 fallbackStage, VkAccessFlags2 fallbackAccess,
                         VkPipelineStageFlags2 &outStage, VkAccessFlags2 &outAccess) {

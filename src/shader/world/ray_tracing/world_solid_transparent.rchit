@@ -4,6 +4,7 @@
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_EXT_buffer_reference2 : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_opacity_micromap : require
 
 #include "../util/disney.glsl"
 #include "../util/random.glsl"
@@ -73,6 +74,12 @@ layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer Ind
     uint indices[];
 }
 indexBuffer;
+
+layout(push_constant) uniform PushConstant {
+    int numRayBounces;
+    int flags;
+} pc;
+#define SIMPLIFIED_INDIRECT ((pc.flags & 1) != 0)
 
 layout(location = 0) rayPayloadInEXT PrimaryRay mainRay;
 layout(location = 1) rayPayloadEXT ShadowRay shadowRay;
@@ -201,19 +208,23 @@ void main() {
         flagValue = ivec4(0);
     }
 
-    uint useGlint = v0.useGlint;
-    uint glintTexture = v0.glintTexture;
-    vec2 glintUV = baryCoords.x * v0.glintUV + baryCoords.y * v1.glintUV + baryCoords.z * v2.glintUV;
-    glintUV = (worldUbo.textureMat * vec4(glintUV, 0.0, 1.0)).xy;
-    vec3 glint = useGlint * texture(textures[nonuniformEXT(glintTexture)], glintUV).rgb;
-    glint = glint * glint;
+    vec3 glint = vec3(0.0);
+    vec4 overlayColor = vec4(0.0);
+    if (!SIMPLIFIED_INDIRECT || mainRay.index <= 1) {
+        uint useGlint = v0.useGlint;
+        uint glintTexture = v0.glintTexture;
+        vec2 glintUV = baryCoords.x * v0.glintUV + baryCoords.y * v1.glintUV + baryCoords.z * v2.glintUV;
+        glintUV = (worldUbo.textureMat * vec4(glintUV, 0.0, 1.0)).xy;
+        glint = useGlint * texture(textures[nonuniformEXT(glintTexture)], glintUV).rgb;
+        glint = glint * glint;
 
-    uint useOverlay = v0.useOverlay;
-    ivec2 overlayUV = v0.overlayUV;
-    vec4 overlayColor = texelFetch(textures[nonuniformEXT(worldUbo.overlayTextureID)], overlayUV, 0);
+        uint useOverlay = v0.useOverlay;
+        ivec2 overlayUV = v0.overlayUV;
+        overlayColor = texelFetch(textures[nonuniformEXT(worldUbo.overlayTextureID)], overlayUV, 0);
+    }
 
     vec3 tint;
-    if (useOverlay > 0) {
+    if (v0.useOverlay > 0) {
         tint = mix(overlayColor.rgb, albedoValue.rgb * colorLayer, overlayColor.a) + glint;
     } else {
         tint = albedoValue.rgb * colorLayer + glint;
@@ -254,6 +265,7 @@ void main() {
         shadowRay.seed = mainRay.seed;
         shadowRay.hitT = INF_DISTANCE;
         shadowRay.insideBoat = mainRay.insideBoat;
+        shadowRay.bounceIndex = mainRay.index;
 
         uint shadowMask = WORLD_MASK;
         if (mainRay.isHand == 0) {
@@ -292,8 +304,8 @@ void main() {
         }
 
         mainRay.radiance += finalLightRadiance;
-        mainRay.directLightRadiance = finalLightRadiance;
 
+        mainRay.directLightRadiance = finalLightRadiance;
         mainRay.directLightHitT = shadowRay.hitT;
     }
 

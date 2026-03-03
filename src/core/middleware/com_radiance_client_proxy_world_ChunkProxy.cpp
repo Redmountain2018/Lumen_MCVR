@@ -5,11 +5,11 @@
 
 #include <iostream>
 
-JNIEXPORT void JNICALL Java_com_radiance_client_proxy_world_ChunkProxy_initNative(JNIEnv *, jclass, jint chunkNum) {
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_world_ChunkProxy_initNative(JNIEnv *, jclass, jint chunkNum) {
     Renderer::instance().world()->chunks()->reset(chunkNum);
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_proxy_world_ChunkProxy_rebuildSingle(JNIEnv *,
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_world_ChunkProxy_rebuildSingle(JNIEnv *,
                                                                                      jclass,
                                                                                      jint originX,
                                                                                      jint originY,
@@ -39,7 +39,7 @@ JNIEXPORT void JNICALL Java_com_radiance_client_proxy_world_ChunkProxy_rebuildSi
     });
 }
 
-JNIEXPORT jboolean JNICALL Java_com_radiance_client_proxy_world_ChunkProxy_isChunkReady(JNIEnv *, jclass, jlong id) {
+extern "C" JNIEXPORT jboolean JNICALL Java_com_radiance_client_proxy_world_ChunkProxy_isChunkReady(JNIEnv *, jclass, jlong id) {
     auto world = Renderer::instance().world();
     if (world == nullptr)
         return false;
@@ -47,7 +47,7 @@ JNIEXPORT jboolean JNICALL Java_com_radiance_client_proxy_world_ChunkProxy_isChu
         return world->chunks()->isChunkReady(id);
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_proxy_world_ChunkProxy_invalidateSingle(JNIEnv *, jclass, jlong index) {
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_world_ChunkProxy_invalidateSingle(JNIEnv *, jclass, jlong index) {
     auto world = Renderer::instance().world();
     if (world == nullptr) return;
     world->chunks()->invalidateChunk(index);

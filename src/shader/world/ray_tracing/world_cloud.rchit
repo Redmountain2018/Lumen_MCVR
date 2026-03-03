@@ -4,6 +4,7 @@
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_EXT_buffer_reference2 : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_opacity_micromap : require
 
 #include "../util/disney.glsl"
 #include "../util/random.glsl"
@@ -153,6 +154,7 @@ void main() {
     shadowRay.radiance = vec3(0.0);
     shadowRay.throughput = vec3(1.0);
     shadowRay.seed = mainRay.seed;
+    shadowRay.bounceIndex = mainRay.index;
 
     traceRayEXT(topLevelAS, gl_RayFlagsNoneEXT,
                 WORLD_MASK, // masks
@@ -182,5 +184,6 @@ void main() {
     mainRay.normalValue = vec4(0);
     mainRay.flagValue = ivec4(0);
     mainRay.noisy = 0;
+    mainRay.lobeType = 0;
     mainRay.stop = 1;
 }

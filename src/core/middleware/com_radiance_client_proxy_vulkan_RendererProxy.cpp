@@ -105,7 +105,7 @@ static void bind_symbols(DYNLIB_HANDLE h) {
     p_glfwWaitEvents = reinterpret_cast<PFN_glfwWaitEvents>(gp("glfwWaitEvents"));
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_initFolderPath(JNIEnv *env,
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_initFolderPath(JNIEnv *env,
                                                                                           jclass,
                                                                                           jstring folderPath) {
     if (folderPath == NULL) { return; }
@@ -121,7 +121,7 @@ JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_initF
     Renderer::folderPath = std::filesystem::path(pathStr);
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_initRenderer(JNIEnv *env,
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_initRenderer(JNIEnv *env,
                                                                                         jclass,
                                                                                         jobjectArray candidates,
                                                                                         jlong windowHandle) {
@@ -143,14 +143,14 @@ JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_initR
     Renderer::instance().framework()->acquireContext();
 }
 
-JNIEXPORT jint JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_maxSupportedTextureSize(JNIEnv *, jclass) {
+extern "C" JNIEXPORT jint JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_maxSupportedTextureSize(JNIEnv *, jclass) {
     std::lock_guard<std::recursive_mutex> guard(g_rendererJniMtx);
     if (!rendererUsable()) return 0;
     auto maxImageSize = Renderer::instance().framework()->physicalDevice()->properties().limits.maxImageDimension2D;
     return maxImageSize;
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_acquireContext(JNIEnv *, jclass) {
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_acquireContext(JNIEnv *, jclass) {
     std::lock_guard<std::recursive_mutex> guard(g_rendererJniMtx);
     if (!rendererUsable()) return;
     auto framework = Renderer::instance().framework();
@@ -158,7 +158,7 @@ JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_acqui
     framework->acquireContext();
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_submitCommand(JNIEnv *, jclass) {
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_submitCommand(JNIEnv *, jclass) {
     std::lock_guard<std::recursive_mutex> guard(g_rendererJniMtx);
     if (!rendererUsable()) return;
     auto framework = Renderer::instance().framework();
@@ -166,7 +166,7 @@ JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_submi
     framework->submitCommand();
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_present(JNIEnv *, jclass) {
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_present(JNIEnv *, jclass) {
     std::lock_guard<std::recursive_mutex> guard(g_rendererJniMtx);
     if (!rendererUsable()) return;
     auto framework = Renderer::instance().framework();
@@ -174,7 +174,7 @@ JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_prese
     framework->present();
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_drawOverlay(
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_drawOverlay(
     JNIEnv *, jclass, jint vertexId, jint indexId, jint pipelineType, jint indexCount, jint indexType) {
     std::lock_guard<std::recursive_mutex> guard(g_rendererJniMtx);
     if (!rendererUsable()) return;
@@ -189,7 +189,7 @@ JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_drawO
                                                   static_cast<VkIndexType>(indexType));
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_fuseWorld(JNIEnv *, jclass) {
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_fuseWorld(JNIEnv *, jclass) {
     std::lock_guard<std::recursive_mutex> guard(g_rendererJniMtx);
     if (!rendererUsable()) return;
     auto framework = Renderer::instance().framework();
@@ -199,7 +199,7 @@ JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_fuseW
     pipelineContext->fuseWorld();
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_postBlur(JNIEnv *, jclass) {
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_postBlur(JNIEnv *, jclass) {
     std::lock_guard<std::recursive_mutex> guard(g_rendererJniMtx);
     if (!rendererUsable()) return;
     auto framework = Renderer::instance().framework();
@@ -211,7 +211,7 @@ JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_postB
     pipelineContext->uiModuleContext->postBlur(6);
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_close(JNIEnv *, jclass) {
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_close(JNIEnv *, jclass) {
     std::lock_guard<std::recursive_mutex> guard(g_rendererJniMtx);
     if (g_rendererClosed.load(std::memory_order_acquire)) return;
 
@@ -225,7 +225,7 @@ JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_close
     g_rendererClosed.store(true, std::memory_order_release);
 }
 
-JNIEXPORT void JNICALL
+extern "C" JNIEXPORT void JNICALL
 Java_com_radiance_client_proxy_vulkan_RendererProxy_shouldRenderWorld(JNIEnv *, jclass, jboolean shouldRenderWorld) {
     std::lock_guard<std::recursive_mutex> guard(g_rendererJniMtx);
     if (!rendererUsable()) return;
@@ -234,7 +234,7 @@ Java_com_radiance_client_proxy_vulkan_RendererProxy_shouldRenderWorld(JNIEnv *, 
     world->shouldRender() = shouldRenderWorld;
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_takeScreenshot(
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_takeScreenshot(
     JNIEnv *, jclass, jboolean withUI, jint width, jint height, jint channel, jlong pointer) {
     std::lock_guard<std::recursive_mutex> guard(g_rendererJniMtx);
     if (!rendererUsable()) return;
@@ -243,7 +243,7 @@ JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_takeS
     framework->takeScreenshot(withUI, width, height, channel, reinterpret_cast<void *>(pointer));
 }
 
-JNIEXPORT jint JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_takeScreenshotRawHdrPacked(
+extern "C" JNIEXPORT jint JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_takeScreenshotRawHdrPacked(
     JNIEnv *, jclass, jboolean withUI, jint width, jint height, jlong pointer, jint byteSize) {
     std::lock_guard<std::recursive_mutex> guard(g_rendererJniMtx);
     if (!rendererUsable()) return static_cast<jint>(VK_FORMAT_UNDEFINED);

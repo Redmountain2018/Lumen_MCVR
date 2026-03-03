@@ -10,21 +10,21 @@
 
 #include <algorithm>
 
-JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetMaxFps(JNIEnv *,
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetMaxFps(JNIEnv *,
                                                                                jclass,
                                                                                jint maxFps,
                                                                                jboolean write) {
     Renderer::options.maxFps = maxFps;
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetInactivityFpsLimit(JNIEnv *,
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetInactivityFpsLimit(JNIEnv *,
                                                                                            jclass,
                                                                                            jint inactivityFpsLimit,
                                                                                            jboolean write) {
     Renderer::options.inactivityFpsLimit = inactivityFpsLimit;
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetVsync(JNIEnv *,
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetVsync(JNIEnv *,
                                                                               jclass,
                                                                               jboolean vsync,
                                                                               jboolean write) {
@@ -32,19 +32,19 @@ JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetVsync(JN
     if (write) Renderer::options.needRecreate = true;
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetChunkBuildingBatchSize(
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetChunkBuildingBatchSize(
     JNIEnv *, jclass, jint chunkBuildingBatchSize, jboolean write) {
     Renderer::options.chunkBuildingBatchSize = chunkBuildingBatchSize;
     if (write) Renderer::instance().world()->chunks()->resetScheduler();
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetChunkBuildingTotalBatches(
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetChunkBuildingTotalBatches(
     JNIEnv *, jclass, jint chunkBuildingTotalBatches, jboolean write) {
     Renderer::options.chunkBuildingTotalBatches = chunkBuildingTotalBatches;
     if (write) Renderer::instance().world()->chunks()->resetScheduler();
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetTonemappingMode(
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetTonemappingMode(
     JNIEnv *, jclass, jint mode, jboolean write) {
     Renderer::options.tonemappingMode = mode;
 }
@@ -54,34 +54,57 @@ extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_native
     Renderer::options.sdrTransferFunction = static_cast<uint32_t>(std::clamp(mode, 0, 1));
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetRayBounces(
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetRayBounces(
     JNIEnv *, jclass, jint bounces, jboolean write) {
     Renderer::options.rayBounces = bounces;
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetDlssQuality(
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetOMMEnabled(
+    JNIEnv *, jclass, jboolean enabled, jboolean write) {
+    Renderer::options.ommEnabled = enabled;
+    if (write) {
+        Renderer::options.needRecreate = true;
+        Renderer::instance().world()->chunks()->resetScheduler();
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetOMMBakerLevel(
+    JNIEnv *, jclass, jint level, jboolean write) {
+    Renderer::options.ommBakerLevel = static_cast<uint32_t>(std::clamp(level, 1, 8));
+    if (write) {
+        Renderer::options.needRecreate = true;
+        Renderer::instance().world()->chunks()->resetScheduler();
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetSimplifiedIndirect(
+    JNIEnv *, jclass, jboolean enabled, jboolean write) {
+    Renderer::options.simplifiedIndirect = enabled;
+}
+
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetDlssQuality(
     JNIEnv *, jclass, jint quality, jboolean write) {
     Renderer::options.upscalerMode = quality;
     if (write) Renderer::options.needRecreate = true;
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetDlssResOverride(
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetDlssResOverride(
     JNIEnv *, jclass, jint resOverride, jboolean write) {
     Renderer::options.upscalerResOverride = resOverride;
     if (write) Renderer::options.needRecreate = true;
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetMinExposure(
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetMinExposure(
     JNIEnv *, jclass, jfloat minExposure, jboolean write) {
     Renderer::options.minExposure = minExposure;
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetMaxExposure(
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetMaxExposure(
     JNIEnv *, jclass, jint maxExposure, jboolean write) {
     Renderer::options.maxExposure = static_cast<float>(maxExposure);
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetExposureCompensation(
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetExposureCompensation(
     JNIEnv *, jclass, jfloat ec, jboolean write) {
     Renderer::options.exposureCompensation = ec;
 }
@@ -106,12 +129,12 @@ extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_native
     Renderer::options.casSharpness = std::clamp(sharpness, 0.0f, 1.0f);
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetMiddleGrey(
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetMiddleGrey(
     JNIEnv *, jclass, jfloat mg, jboolean write) {
     Renderer::options.middleGrey = mg;
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetLwhite(
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetLwhite(
     JNIEnv *, jclass, jfloat lw, jboolean write) {
     Renderer::options.Lwhite = lw;
 }
@@ -156,7 +179,7 @@ extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_native
     Renderer::options.exposureLog2MaxImproved = log2Max;
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetDlssPreset(
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetDlssPreset(
     JNIEnv *, jclass, jint preset, jboolean write) {
     // Clamp to valid DLSS RR preset range (A=0 through G=6)
     Renderer::options.upscalerPreset = static_cast<uint32_t>(std::clamp(preset, 0, 6));
@@ -165,34 +188,34 @@ JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetDlssPres
 
 // --- HDR10 Output ---
 
-JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetHdrEnabled(
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetHdrEnabled(
     JNIEnv *, jclass, jboolean enabled, jboolean write) {
     Renderer::options.hdrEnabled = enabled;
     // Toggling HDR requires swapchain recreation (format + color space change)
     if (write) Renderer::options.needRecreate = true;
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetHdrPeakNits(
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetHdrPeakNits(
     JNIEnv *, jclass, jint nits, jboolean write) {
     Renderer::options.hdrPeakNits = static_cast<float>(nits);
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetHdrPaperWhiteNits(
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetHdrPaperWhiteNits(
     JNIEnv *, jclass, jint nits, jboolean write) {
     Renderer::options.hdrPaperWhiteNits = static_cast<float>(nits);
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetHdrUiBrightnessNits(
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetHdrUiBrightnessNits(
     JNIEnv *, jclass, jint nits, jboolean write) {
     Renderer::options.hdrUiBrightnessNits = static_cast<float>(nits);
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetSaturation(
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetSaturation(
     JNIEnv *, jclass, jfloat saturation, jboolean write) {
     Renderer::options.saturation = saturation;
 }
 
-JNIEXPORT jboolean JNICALL Java_com_radiance_client_option_Options_nativeIsHdrActive(
+extern "C" JNIEXPORT jboolean JNICALL Java_com_radiance_client_option_Options_nativeIsHdrActive(
     JNIEnv *, jclass) {
     auto *renderer = Renderer::try_instance();
     if (renderer == nullptr) {
@@ -208,7 +231,7 @@ JNIEXPORT jboolean JNICALL Java_com_radiance_client_option_Options_nativeIsHdrAc
     return hdrActive ? JNI_TRUE : JNI_FALSE;
 }
 
-JNIEXPORT jboolean JNICALL Java_com_radiance_client_option_Options_nativeIsHdrSupported(
+extern "C" JNIEXPORT jboolean JNICALL Java_com_radiance_client_option_Options_nativeIsHdrSupported(
     JNIEnv *, jclass) {
     auto *renderer = Renderer::try_instance();
     if (renderer == nullptr) {
@@ -223,7 +246,7 @@ JNIEXPORT jboolean JNICALL Java_com_radiance_client_option_Options_nativeIsHdrSu
     return framework->swapchain()->isHDRSupported() ? JNI_TRUE : JNI_FALSE;
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeRebuildChunks(
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeRebuildChunks(
     JNIEnv *, jclass) {
     Renderer::instance().world()->chunks()->resetScheduler();
 }

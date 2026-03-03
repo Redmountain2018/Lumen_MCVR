@@ -201,5 +201,6 @@ void main() {
     mainRay.normalValue = normalValue;
     mainRay.flagValue = flagValue;
     mainRay.noisy = 0;
+    mainRay.lobeType = 0;
     mainRay.stop = 1;
 }

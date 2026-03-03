@@ -21,6 +21,9 @@ struct Options {
     uint32_t upscalerQuality = 0;
     uint32_t denoiserMode = 1;
     uint32_t rayBounces = 4;
+    bool ommEnabled = false; // Opacity Micro Maps (disabled by default until Phase 1 validated)
+    uint32_t ommBakerLevel = 4; // OMM baker max subdivision level (1-8)
+    bool simplifiedIndirect = false; // Skip detail textures on indirect bounces + simplify shadow AHS
     uint32_t debugMode = 0;
     bool needRecreate = false;
 

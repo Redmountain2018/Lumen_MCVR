@@ -38,7 +38,7 @@ struct PrimaryRay {
     // in
     T_UINT index;
 
-    // in out, maintained during all ray tracing
+    // in/out, maintained during all ray tracing
     T_VEC3 origin;
     T_VEC3 direction;
     T_VEC3 radiance;
@@ -51,7 +51,7 @@ struct PrimaryRay {
     T_UINT insideBoat;
     T_UINT isHand;
 
-    // out, updated by the latest ray tracing
+    // out
     T_UINT instanceIndex;
     T_UINT geometryIndex;
     T_UINT primitiveIndex;
@@ -62,12 +62,12 @@ struct PrimaryRay {
     T_VEC4 specularValue;
     T_VEC4 normalValue;
     T_IVEC4 flagValue;
-    T_UINT stop;
-    T_UINT cont;
     T_UINT noisy;
     T_UINT lobeType;
     T_VEC3 directLightRadiance;
     T_FLOAT directLightHitT;
+    T_UINT stop;
+    T_UINT cont;
 };
 
 struct ShadowRay {
@@ -76,6 +76,7 @@ struct ShadowRay {
     T_UINT seed;
     T_FLOAT hitT;
     T_UINT insideBoat;
+    T_UINT bounceIndex;
 };
 
 #endif

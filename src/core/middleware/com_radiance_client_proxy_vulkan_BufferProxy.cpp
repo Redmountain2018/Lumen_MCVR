@@ -4,7 +4,7 @@
 #include "core/render/render_framework.hpp"
 #include "core/render/renderer.hpp"
 
-JNIEXPORT jint JNICALL Java_com_radiance_client_proxy_vulkan_BufferProxy_allocateBuffer(JNIEnv *, jclass) {
+extern "C" JNIEXPORT jint JNICALL Java_com_radiance_client_proxy_vulkan_BufferProxy_allocateBuffer(JNIEnv *, jclass) {
     auto buffers = Renderer::instance().buffers();
     if (buffers == nullptr)
         return 0;
@@ -12,21 +12,21 @@ JNIEXPORT jint JNICALL Java_com_radiance_client_proxy_vulkan_BufferProxy_allocat
         return buffers->allocateBuffer();
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_BufferProxy_initializeBuffer(
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_BufferProxy_initializeBuffer(
     JNIEnv *, jclass, jint id, jint size, jint usageFlags) {
     auto buffers = Renderer::instance().buffers();
     if (buffers == nullptr) return;
     buffers->initializeBuffer(id, size, usageFlags);
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_BufferProxy_buildIndexBuffer(
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_BufferProxy_buildIndexBuffer(
     JNIEnv *, jclass, jint dstId, jint type, jint drawMode, jint vertexCount, jint expectedIndexCount) {
     auto buffers = Renderer::instance().buffers();
     if (buffers == nullptr) return;
     buffers->buildIndexBuffer(dstId, type, drawMode, vertexCount, expectedIndexCount);
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_BufferProxy_queueUpload(JNIEnv *env,
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_BufferProxy_queueUpload(JNIEnv *env,
                                                                                      jclass,
                                                                                      jlong ptr,
                                                                                      jint dstId) {
@@ -35,13 +35,13 @@ JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_BufferProxy_queueUp
     buffers->queueOverlayUpload(reinterpret_cast<uint8_t *>(ptr), dstId);
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_BufferProxy_performQueuedUpload(JNIEnv *, jclass) {
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_BufferProxy_performQueuedUpload(JNIEnv *, jclass) {
     auto buffers = Renderer::instance().buffers();
     if (buffers == nullptr) return;
     buffers->performQueuedUpload();
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_BufferProxy_updateOverlayDrawUniform(JNIEnv *,
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_BufferProxy_updateOverlayDrawUniform(JNIEnv *,
                                                                                                   jclass,
                                                                                                   jlong ptr) {
     auto buffers = Renderer::instance().buffers();
@@ -50,7 +50,7 @@ JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_BufferProxy_updateO
     buffers->appendOverlayDrawUniform(*ubo);
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_BufferProxy_updateOverlayPostUniform(JNIEnv *,
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_BufferProxy_updateOverlayPostUniform(JNIEnv *,
                                                                                                   jclass,
                                                                                                   jlong ptr) {
     auto buffers = Renderer::instance().buffers();
@@ -84,7 +84,7 @@ JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_BufferProxy_updateO
     buffers->appendOverlayPostUniform(*ubo);
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_BufferProxy_updateWorldUniform(JNIEnv *,
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_BufferProxy_updateWorldUniform(JNIEnv *,
                                                                                             jclass,
                                                                                             jlong ptr) {
     auto buffers = Renderer::instance().buffers();
@@ -93,21 +93,21 @@ JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_BufferProxy_updateW
     buffers->setAndUploadWorldUniformBuffer(*ubo);
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_BufferProxy_updateSkyUniform(JNIEnv *, jclass, jlong ptr) {
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_BufferProxy_updateSkyUniform(JNIEnv *, jclass, jlong ptr) {
     auto buffers = Renderer::instance().buffers();
     if (buffers == nullptr) return;
     vk::Data::SkyUBO *ubo = reinterpret_cast<vk::Data::SkyUBO *>(ptr);
     buffers->setAndUploadSkyUniformBuffer(*ubo);
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_BufferProxy_updateMapping(JNIEnv *, jclass, jlong ptr) {
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_BufferProxy_updateMapping(JNIEnv *, jclass, jlong ptr) {
     auto buffers = Renderer::instance().buffers();
     if (buffers == nullptr) return;
     vk::Data::TextureMapping *mapping = reinterpret_cast<vk::Data::TextureMapping *>(ptr);
     buffers->setAndUploadTextureMappingBuffer(*mapping);
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_BufferProxy_updateLightMapUniform(JNIEnv *,
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_BufferProxy_updateLightMapUniform(JNIEnv *,
                                                                                                jclass,
                                                                                                jlong ptr) {
     auto buffers = Renderer::instance().buffers();

@@ -35,7 +35,9 @@ vk::Device::Device(std::shared_ptr<Instance> instance,
                                                    VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME,
                                                    VK_KHR_MAINTENANCE_5_EXTENSION_NAME,
                                                    // HDR10: enables vkSetHdrMetadataEXT for SMPTE ST.2086 mastering display metadata
-                                                   VK_EXT_HDR_METADATA_EXTENSION_NAME};
+                                                   VK_EXT_HDR_METADATA_EXTENSION_NAME,
+                                                   // OMM: Opacity Micro Maps for hardware-resolved alpha testing
+                                                   VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME};
 
     std::vector<VkExtensionProperties> dlssExtensions;
     NVSDK_NGX_Result dlssResult =
@@ -84,8 +86,12 @@ vk::Device::Device(std::shared_ptr<Instance> instance,
 #endif
 
     // query supported features
+    VkPhysicalDeviceOpacityMicromapFeaturesEXT supportedOMMFeatures{};
+    supportedOMMFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_EXT;
+
     VkPhysicalDeviceMaintenance5Features supportedMaintenance5{};
     supportedMaintenance5.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES;
+    supportedMaintenance5.pNext = &supportedOMMFeatures;
 
     VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT supportedVertexInputDynamicState{};
     supportedVertexInputDynamicState.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_INPUT_DYNAMIC_STATE_FEATURES_EXT;
@@ -128,10 +134,20 @@ vk::Device::Device(std::shared_ptr<Instance> instance,
     auto hasExtension = [&](const char *name) { return selectedExtensions.find(name) != selectedExtensions.end(); };
 
     // enabling features
+    ommSupported_ = hasExtension(VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME) &&
+                    supportedOMMFeatures.micromap == VK_TRUE;
+
+    VkPhysicalDeviceOpacityMicromapFeaturesEXT ommFeatures{};
+    ommFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_EXT;
+    ommFeatures.micromap = ommSupported_ ? VK_TRUE : VK_FALSE;
+
     VkPhysicalDeviceMaintenance5Features maintenance5Features{};
     maintenance5Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES;
+    maintenance5Features.pNext = &ommFeatures;
     maintenance5Features.maintenance5 =
         hasExtension(VK_KHR_MAINTENANCE_5_EXTENSION_NAME) ? supportedMaintenance5.maintenance5 : VK_FALSE;
+
+    deviceCout() << "Opacity Micro Maps (OMM): " << (ommSupported_ ? "YES" : "NO") << std::endl;
 
     VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT vertexInputDynamicState{};
     vertexInputDynamicState.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_INPUT_DYNAMIC_STATE_FEATURES_EXT;

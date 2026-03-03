@@ -19,6 +19,7 @@ class Device : public SharedObject<Device> {
     VkQueue &secondaryQueue();
 
     bool hasExtendedDynamicState2LogicOp() const { return extendedDynamicState2LogicOp_; }
+    bool hasOMM() const { return ommSupported_; }
 
   private:
     std::shared_ptr<Instance> instance_;
@@ -30,5 +31,6 @@ class Device : public SharedObject<Device> {
     VkQueue secondaryQueue_ = VK_NULL_HANDLE;
 
     bool extendedDynamicState2LogicOp_ = false;
+    bool ommSupported_ = false;
 };
 }; // namespace vk

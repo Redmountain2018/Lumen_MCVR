@@ -1,5 +1,6 @@
 #include "core/vulkan/pipeline.hpp"
 
+#include "core/render/renderer.hpp"
 #include "core/vulkan/descriptor.hpp"
 #include "core/vulkan/device.hpp"
 #include "core/vulkan/render_pass.hpp"
@@ -343,6 +344,9 @@ std::shared_ptr<vk::RayTracingPipeline> vk::RayTracingPipelineBuilder::build(std
     pipelineInfo.pGroups = shaderGroupBuilder_.shaderGroupCreateInfos.data();
     pipelineInfo.layout = pipelineLayout_;
     pipelineInfo.maxPipelineRayRecursionDepth = 16;
+    if (device->hasOMM() && Renderer::options.ommEnabled) {
+        pipelineInfo.flags |= VK_PIPELINE_CREATE_RAY_TRACING_OPACITY_MICROMAP_BIT_EXT;
+    }
 
     VkPipeline rtPipeline;
     if (vkCreateRayTracingPipelinesKHR(device->vkDevice(), VK_NULL_HANDLE, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,

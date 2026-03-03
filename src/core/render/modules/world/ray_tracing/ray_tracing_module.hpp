@@ -21,7 +21,7 @@ class WorldPrepareContext;
 
 struct RayTracingPushConstant {
     int numRayBounces;
-    int useJitter;
+    int flags; // bit 0: simplified indirect lighting
 };
 
 class RayTracingModule : public WorldModule, public SharedObject<RayTracingModule> {

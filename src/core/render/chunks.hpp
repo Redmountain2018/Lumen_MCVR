@@ -44,6 +44,20 @@ struct ChunkBuildData : public SharedObject<ChunkBuildData> {
     std::vector<std::vector<uint32_t>> indices;
     std::vector<std::shared_ptr<vk::DeviceLocalBuffer>> vertexBuffers;
     std::vector<std::shared_ptr<vk::DeviceLocalBuffer>> indexBuffers;
+    std::vector<std::shared_ptr<vk::DeviceLocalBuffer>> ommIndexBuffers; // OMM per-triangle index buffers
+    // Phase 2 OMM: micromap data per geometry
+    struct OMMGeometryData {
+        std::shared_ptr<vk::DeviceLocalBuffer> arrayBuffer;  // raw OMM bit data
+        std::shared_ptr<vk::DeviceLocalBuffer> descBuffer;   // VkMicromapTriangleEXT array
+        std::vector<VkMicromapUsageEXT> descHistogram;       // for micromap build
+        std::vector<VkMicromapUsageEXT> indexHistogram;       // for BLAS attachment
+        VkMicromapEXT micromap = VK_NULL_HANDLE;
+        std::shared_ptr<vk::Device> device;                  // for destroying micromap handle
+        std::shared_ptr<vk::DeviceLocalBuffer> micromapBuffer;
+        std::shared_ptr<vk::DeviceLocalBuffer> micromapScratchBuffer;
+        bool hasMicromap = false;
+    };
+    std::vector<OMMGeometryData> ommGeometryData;
     std::shared_ptr<vk::BLAS> blas;
     std::shared_ptr<vk::BLASBuilder> blasBuilder;
 
@@ -58,8 +72,9 @@ struct ChunkBuildData : public SharedObject<ChunkBuildData> {
                    std::vector<World::GeometryTypes> &&geometryTypes,
                    std::vector<std::vector<vk::VertexFormat::PBRTriangle>> &&vertices,
                    std::vector<std::vector<uint32_t>> &&indices);
+    ~ChunkBuildData();
 
-    void build();
+    void build(bool allowMicromapBake = true, bool skipOMM = false);
 };
 
 struct Chunk1;

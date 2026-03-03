@@ -185,6 +185,7 @@ void Buffers::performQueuedUpload() {
     }
 
     for (auto buffer : *importantIndexVertexBuffer_) {
+        if (buffer == nullptr) continue;
         uploadPreBufferBarriers.push_back({
             .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
             .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT,
@@ -214,7 +215,9 @@ void Buffers::performQueuedUpload() {
         if (size > 0) { buffer->uploadToBuffer(cmdBuffer, size, 0, 0); }
     }
 
-    for (auto buffer : *importantIndexVertexBuffer_) { buffer->uploadToBuffer(cmdBuffer); }
+    for (auto buffer : *importantIndexVertexBuffer_) {
+        if (buffer != nullptr) { buffer->uploadToBuffer(cmdBuffer); }
+    }
 
     cmdBuffer->barriersBufferImage(uploadPostBufferBarriers, {});
 }

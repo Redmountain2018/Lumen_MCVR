@@ -126,4 +126,54 @@ else()
     message(STATUS "NRD Denoiser Disabled")
 endif()
 
+# OMM SDK (Opacity Micro-Map) - CPU baker only
+# We bypass the OMM top-level CMake and add only the library + its deps,
+# providing glm/stb from our existing project to avoid target conflicts.
+option(MCVR_ENABLE_OMM "Enable Opacity Micro-Map SDK for AHS elimination" ON)
+
+if (MCVR_ENABLE_OMM)
+    message(STATUS "OMM SDK Enabled")
+
+    # glm target (OMM expects a 'glm' CMake target; we provide our existing headers)
+    if(NOT TARGET glm)
+        add_library(glm INTERFACE)
+        target_include_directories(glm INTERFACE ${GLM_INCLUDE_DIR})
+    endif()
+
+    # stb_lib target (OMM expects 'stb_lib' for stb_image.h / stb_image_write.h)
+    if(NOT TARGET stb_lib)
+        add_library(stb_lib INTERFACE)
+        target_include_directories(stb_lib INTERFACE ${STB_INCLUDE_DIR})
+    endif()
+
+    # lz4 (from OMM's external, static only)
+    set(LZ4_BUILD_CLI OFF CACHE BOOL "" FORCE)
+    set(LZ4_BUILD_LEGACY_LZ4C OFF CACHE BOOL "" FORCE)
+    add_subdirectory(extern/omm/external/lz4/build/cmake EXCLUDE_FROM_ALL)
+
+    # xxHash (from OMM's external)
+    set(XXHASH_BUILD_XXHSUM OFF CACHE BOOL "" FORCE)
+    add_subdirectory(extern/omm/external/xxHash/build/cmake EXCLUDE_FROM_ALL)
+
+    # OMM library - static, CPU-only (no precompiled shaders)
+    set(OMM_LIB_TARGET_NAME omm-lib)
+    set(OMM_PROJECT_FOLDER "External/OMM")
+    set(OMM_STATIC_LIBRARY ON CACHE BOOL "" FORCE)
+    set(OMM_ENABLE_PRECOMPILED_SHADERS_DXIL OFF CACHE BOOL "" FORCE)
+    set(OMM_ENABLE_PRECOMPILED_SHADERS_SPIRV OFF CACHE BOOL "" FORCE)
+    set(OMM_ENABLE_OPENMP OFF CACHE BOOL "" FORCE)
+    set(OMM_LIB_INSTALL OFF CACHE BOOL "" FORCE)
+    # OMM lib uses PROJECT_VERSION which requires a version-enabled project scope
+    set(PROJECT_VERSION "1.0.0")
+    add_subdirectory(extern/omm/libraries/omm-lib EXCLUDE_FROM_ALL)
+    unset(PROJECT_VERSION)
+    # Remove stb_lib.cpp (duplicate STB_IMAGE_IMPLEMENTATION) and debug_impl.cpp
+    # (debug visualization, not needed) from omm-lib sources.
+    get_target_property(_omm_sources omm-lib SOURCES)
+    list(FILTER _omm_sources EXCLUDE REGEX "(stb_lib|debug_impl)\\.cpp$")
+    set_target_properties(omm-lib PROPERTIES SOURCES "${_omm_sources}")
+else()
+    message(STATUS "OMM SDK Disabled")
+endif()
+
 add_subdirectory(src)

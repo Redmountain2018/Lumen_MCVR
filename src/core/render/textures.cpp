@@ -17,6 +17,8 @@ Textures::Textures(std::shared_ptr<Framework> framework) {}
 
 void Textures::reset() {
     textures_.clear();
+    textureAlphaClass_.clear();
+    textureAlphaData_.clear();
     nextID = 0;
 }
 
@@ -163,6 +165,41 @@ void Textures::queueUpload(uint8_t *srcPointer,
         dstTextureUploadQueueIter = uploadQueue_->emplace(dstId, std::vector<VkBufferImageCopy>{}).first;
     }
     dstTextureUploadQueueIter->second.emplace_back(region);
+
+#ifdef MCVR_ENABLE_OMM
+    // Extract alpha channel for OMM baking (mip 0 only, RGBA formats = 4 bpp)
+    if (level == 0 && bytePerPixel == 4) {
+        uint32_t texW = dstTexture->width();
+        uint32_t texH = dstTexture->height();
+
+        auto it = textureAlphaData_.find(dstId);
+        if (it != textureAlphaData_.end()) {
+            // Re-upload: alpha data is overwritten below, no special handling needed
+        } else {
+            TextureAlphaData &data = textureAlphaData_[dstId];
+            data.width = texW;
+            data.height = texH;
+            data.alpha.resize(texW * texH, 255);
+            data.animated = false;
+            it = textureAlphaData_.find(dstId);
+        }
+
+        TextureAlphaData &data = it->second;
+        // Copy alpha channel from the uploaded RGBA region
+        for (uint32_t row = 0; row < height; ++row) {
+            uint32_t srcRow = srcOffsetY + row;
+            uint32_t dstRow = dstOffsetY + row;
+            if (dstRow >= texH) break;
+            for (uint32_t col = 0; col < width; ++col) {
+                uint32_t srcCol = srcOffsetX + col;
+                uint32_t dstCol = dstOffsetX + col;
+                if (dstCol >= texW) break;
+                size_t srcIdx = (srcRow * srcRowPixels + srcCol) * 4 + 3; // alpha byte
+                data.alpha[dstRow * texW + dstCol] = srcPointer[srcIdx];
+            }
+        }
+    }
+#endif
 }
 
 void Textures::performQueuedUpload() {
@@ -265,6 +302,28 @@ void Textures::bindAllTextures() {
 
         Renderer::instance().framework()->pipeline()->bindTexture(samplers[id], texture, id);
     }
+}
+
+void Textures::setTextureAlphaClass(uint32_t id, AlphaClass alphaClass) {
+    std::unique_lock<std::recursive_mutex> lck(mutex_);
+    textureAlphaClass_[id] = alphaClass;
+}
+
+Textures::AlphaClass Textures::getTextureAlphaClass(uint32_t id) const {
+    auto it = textureAlphaClass_.find(id);
+    if (it != textureAlphaClass_.end()) {
+        return it->second;
+    }
+    // Default: assume mixed (needs AHS) for unknown textures
+    return AlphaClass::MIXED;
+}
+
+const Textures::TextureAlphaData *Textures::getTextureAlphaData(uint32_t id) const {
+    auto it = textureAlphaData_.find(id);
+    if (it != textureAlphaData_.end()) {
+        return &it->second;
+    }
+    return nullptr;
 }
 
 ImageBufferCache::ImageBufferCache(std::shared_ptr<vk::VMA> vma, std::shared_ptr<vk::Device> device, uint32_t frameNum)

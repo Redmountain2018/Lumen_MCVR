@@ -3,7 +3,7 @@
 #include "core/render/entities.hpp"
 #include "core/render/renderer.hpp"
 
-JNIEXPORT void JNICALL Java_com_radiance_client_proxy_world_EntityProxy_queueBuild(JNIEnv *,
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_world_EntityProxy_queueBuild(JNIEnv *,
                                                                                    jclass,
                                                                                    jfloat lineWidth,
                                                                                    jint coordinate,
@@ -47,7 +47,7 @@ JNIEXPORT void JNICALL Java_com_radiance_client_proxy_world_EntityProxy_queueBui
     });
 }
 
-JNIEXPORT void JNICALL Java_com_radiance_client_proxy_world_EntityProxy_build(JNIEnv *, jclass) {
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_world_EntityProxy_build(JNIEnv *, jclass) {
     auto world = Renderer::instance().world();
     if (world == nullptr) return;
     world->entities()->build();

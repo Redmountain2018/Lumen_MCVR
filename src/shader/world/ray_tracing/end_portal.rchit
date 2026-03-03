@@ -187,5 +187,6 @@ void main() {
     mainRay.normalValue = vec4(0.0);
     mainRay.flagValue = ivec4(0);
     mainRay.noisy = 0;
+    mainRay.lobeType = 0;
     mainRay.stop = 1;
 }
