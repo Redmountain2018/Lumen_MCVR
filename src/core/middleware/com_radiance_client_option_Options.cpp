@@ -52,7 +52,7 @@ extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_native
 
 extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetSdrTransferFunction(
     JNIEnv *, jclass, jint mode, jboolean write) {
-    Renderer::options.sdrTransferFunction = static_cast<uint32_t>(std::clamp(mode, 0, 1));
+    Renderer::options.sdrTransferFunction = static_cast<uint32_t>(std::clamp(mode, (jint)0, (jint)1));
 }
 
 extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetRayBounces(
@@ -71,7 +71,7 @@ extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_native
 
 extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetOMMBakerLevel(
     JNIEnv *, jclass, jint level, jboolean write) {
-    Renderer::options.ommBakerLevel = static_cast<uint32_t>(std::clamp(level, 1, 8));
+    Renderer::options.ommBakerLevel = static_cast<uint32_t>(std::clamp(level, (jint)1, (jint)8));
     if (write) {
         Renderer::options.needRecreate = true;
         Renderer::instance().world()->chunks()->resetScheduler();
@@ -133,7 +133,7 @@ extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_native
 
 extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetCasSharpness(
     JNIEnv *, jclass, jfloat sharpness, jboolean write) {
-    Renderer::options.casSharpness = std::clamp(sharpness, 0.0f, 1.0f);
+    Renderer::options.casSharpness = std::clamp(sharpness, (jfloat)0.0f, (jfloat)1.0f);
 }
 
 extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetMiddleGrey(
@@ -189,7 +189,7 @@ extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_native
 extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetDlssPreset(
     JNIEnv *, jclass, jint preset, jboolean write) {
     // Clamp to valid DLSS RR preset range (A=0 through G=6)
-    Renderer::options.upscalerPreset = static_cast<uint32_t>(std::clamp(preset, 0, 6));
+    Renderer::options.upscalerPreset = static_cast<uint32_t>(std::clamp(preset, (jint)0, (jint)6));
     if (write) Renderer::options.needRecreate = true;
 }
 

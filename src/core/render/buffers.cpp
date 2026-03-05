@@ -380,7 +380,22 @@ void Buffers::setAndUploadSkyUniformBuffer(vk::Data::SkyUBO &ubo) {
     ubo.betaR = glm::vec3(5.802e-6, 13.558e-6, 33.100e-6);
     ubo.betaM = glm::vec3(21.000e-6, 21.000e-6, 21.000e-6);
     ubo.minViewCos = 0.02;
+
+    glm::vec3 toSun = normalize(ubo.sunDirection);
+    float cosTheta = std::max(toSun.y, 0.05f);
+    float opticalDepth = 1.0f / cosTheta;
+    //const glm::vec3 scatteringCoeff(2.5f, 5.0f, 12.0f);
+    const glm::vec3 scatteringCoeff(0.8f, 0.9f, 1.0f);
+    glm::vec3 transmittance = glm::exp(-scatteringCoeff * opticalDepth);
+        float maxComp = std::max(transmittance.x, std::max(transmittance.y, transmittance.z));
+    if (maxComp > 0.0f) {
+        transmittance /= maxComp;
+    } else {
+        transmittance = glm::vec3(0.0f); // 安全保护（理论上不会发生）
+    }
+
     ubo.sunRadiance = glm::vec3(16);
+    ubo.sunColor = transmittance;
     ubo.moonRadiance = glm::vec3(0.4, 0.5, 1);
 
     // HDR radiance scale: only apply when HDR10 output is actually active.

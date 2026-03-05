@@ -157,7 +157,7 @@ void main() {
                         float mu = clamp(dot(up, sunDir), -1.0, 1.0);
                         r = clamp(r, skyUBO.Rg, skyUBO.Rt);
                         vec3 T = sampleTransmittance(r, mu);
-                        vec3 sunRadiance = (sunSample.rgb * skyUBO.sunRadiance * skyUBO.envCelestial.z * T * sunSample.a) * daySky;
+                        vec3 sunRadiance = (sunSample.rgb * skyUBO.sunRadiance * skyUBO.sunColor * skyUBO.envCelestial.z * T * sunSample.a) * daySky;
                         mainRay.radiance += mix(sunRadiance, vec3(0.0), progress) * mainRay.throughput;
                     }
                 }

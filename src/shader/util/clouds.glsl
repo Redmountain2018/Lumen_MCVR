@@ -344,7 +344,7 @@ vec3 cloudMainLightRadiance(SkyUBO skyUBO, out vec3 toLight) {
     // Use moon when sun is below horizon.
     if (sunDir.y > 0.0) {
         toLight = sunDir;
-        radiance = (skyUBO.sunRadiance * skyUBO.envCelestial.z);
+        radiance = (skyUBO.sunRadiance * skyUBO.envCelestial.z * skyUBO.sunColor);
     } else {
         toLight = normalize(skyUBO.moonDirection);
         radiance = (skyUBO.moonRadiance * skyUBO.envCelestial.w) * 0.05;

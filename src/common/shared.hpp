@@ -325,6 +325,8 @@ namespace Data {
         // cloudLighting.z: sunOcclusionStrength
         // cloudLighting.w: noiseAffectsShadows (0=off, 1=on)
         T_VEC4 cloudLighting;
+
+        T_VEC3 sunColor;
     };
 
     struct TextureMapEntry {
