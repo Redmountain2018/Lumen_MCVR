@@ -1,5 +1,6 @@
 #version 460
 #extension GL_EXT_ray_tracing : require
+#extension GL_EXT_ray_query : require
 #extension GL_GOOGLE_include_directive : require
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_EXT_buffer_reference2 : require
@@ -232,11 +233,56 @@ void main() {
 
     albedoValue = vec4(tint, albedoValue.a);
     LabPBRMat mat = convertLabPBRMaterial(albedoValue, specularValue, normalValue);
-
     // the provided normal is unreliable! (such as grass, etc.)
     // calculate on the fly for now
     vec3 normal =
         calculateNormal(v0.pos, v1.pos, v2.pos, v0.textureUV, v1.textureUV, v2.textureUV, mat.normal, viewDir);
+
+
+    // --- 添加湿润效果：仅在下雨时，且当前点露天（无上方遮挡）时应用 ---
+    if (skyUBO.rainGradient > 0.0) {
+        vec3 upDir = vec3(0.0, 1.0, 0.0);                       // 世界向上方向（假设Y轴向上）
+        vec3 rayOrigin = worldPos + normal * 0.001;              // 偏移避免自遮挡
+
+        // 保存当前的 shadowRay，以便发射后恢复
+        ShadowRay savedShadowRay = shadowRay;
+        // 初始化 hitT 为无穷大（表示未命中）
+        shadowRay.hitT = INF_DISTANCE;
+
+        traceRayEXT(topLevelAS,
+                    gl_RayFlagsTerminateOnFirstHitEXT,           // 找到第一个命中即停止
+                    WORLD_MASK,                                   // 只检测世界方块
+                    0,                                            // sbtRecordOffset
+                    0,                                            // sbtRecordStride
+                    2,                                            // missIndex（复用阴影的 miss 索引）
+                    rayOrigin,
+                    0.001,                                        // tMin
+                    upDir,
+                    1000.0,                                       // tMax（足够高）
+                    1                                             // payload location（与阴影射线一致）
+                    );
+
+        // 如果 hitT 仍是无穷大，说明未命中任何物体 → 露天
+        bool isExposed = (shadowRay.hitT >= INF_DISTANCE);
+
+        // 恢复原来的 shadowRay
+        shadowRay = savedShadowRay;
+
+        if (isExposed) {
+            float wetness = skyUBO.rainGradient;
+            float minRoughness = 0.01;
+            float maxRoughness = mat.roughness;
+            mat.roughness = mix(minRoughness, maxRoughness, 1.0 - wetness); // 越湿润越光滑
+            mat.albedo.rgb *= (1.0 - 0.2 * wetness); // 雨水会略微降低反射率，增加暗沉感
+            if (mat.metallic == 0.0) {
+                vec3 targetF0 = vec3(0.12);             // 比默认的 0.04 明显增强
+                float factor = wetness * 0.8;            // 控制插值强度，最大影响80%
+                mat.f0 = mix(mat.f0, targetF0, factor);
+            }
+        }
+}
+
+
 
     // add glowing radiance
     float factor = mainRay.index == 0 ? 1.0 : 16.0 * skyUBO.hdrRadianceScale;
