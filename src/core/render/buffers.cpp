@@ -384,14 +384,14 @@ void Buffers::setAndUploadSkyUniformBuffer(vk::Data::SkyUBO &ubo) {
     glm::vec3 toSun = normalize(ubo.sunDirection);
     float cosTheta = std::max(toSun.y, 0.05f);
     float opticalDepth = 1.0f / cosTheta;
-    //const glm::vec3 scatteringCoeff(2.5f, 5.0f, 12.0f);
-    const glm::vec3 scatteringCoeff(0.8f, 0.9f, 1.0f);
+    float atomsphereThickness = 0.6f;
+    const glm::vec3 scatteringCoeff(0.85f * atomsphereThickness, 0.95f * atomsphereThickness, 1.2f * atomsphereThickness);
     glm::vec3 transmittance = glm::exp(-scatteringCoeff * opticalDepth);
         float maxComp = std::max(transmittance.x, std::max(transmittance.y, transmittance.z));
     if (maxComp > 0.0f) {
         transmittance /= maxComp;
     } else {
-        transmittance = glm::vec3(0.0f); // 安全保护（理论上不会发生）
+        transmittance = glm::vec3(0.0f); 
     }
 
     ubo.sunRadiance = glm::vec3(16);
