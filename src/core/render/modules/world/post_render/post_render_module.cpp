@@ -684,7 +684,7 @@ void PostRenderModule::initPipeline() {
                                  .lineWidth = 1.0f,
                                        })
                                        .beginColorBlendAttachmentState()
-                                       .defineColorBlendAttachmentState(starColorBlendAttachmentState)
+                                       .defineColorBlendAttachmentState(postColorBlendAttachmentState)
                                        .endColorBlendAttachmentState()
                                        .definePipelineLayout(descriptorTables_[0])
                                        .build(device);

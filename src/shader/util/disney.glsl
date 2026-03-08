@@ -90,6 +90,33 @@ vec3 SampleGGXVNDF(vec3 V, float ax, float ay, float r1, float r2) {
     return normalize(vec3(ax * Nh.x, ay * Nh.y, max(0.0, Nh.z)));
 }
 
+float GTR1(float NDotH, float a) {
+    if (a >= 1.0) return 1.0 / PI;
+    float a2 = a * a;
+    float t = 1.0 + (a2 - 1.0) * NDotH * NDotH;
+    return (a2 - 1.0) / (PI * log(a2) * t);
+}
+
+float GTR2(float NDotH, float a) {
+    float a2 = a * a;
+    float denom = NDotH * NDotH * (a2 - 1.0) + 1.0;
+    return a2 / (PI * denom * denom);
+}
+
+float GTR(float NDotH, float a, float gamma) {
+    if (gamma == 1.0) return GTR1(NDotH, a);
+
+    float a2 = a * a;
+    float cos2Theta = NDotH * NDotH;
+    
+    float nom = (gamma - 1.0) * (a2 - 1.0);
+    float denom_k = PI * (1.0 - pow(a2, 1.0 - gamma));
+    float k = nom / denom_k;
+
+    float denom = 1.0 + cos2Theta * (a2 - 1.0);
+    return k / pow(denom, gamma);
+}
+
 float GTR2Aniso(float NDotH, float HDotX, float HDotY, float ax, float ay) {
     float a = HDotX / ax;
     float b = HDotY / ay;
@@ -353,5 +380,43 @@ vec3 DisneySample(LabPBRMat mat, vec3 V, vec3 N, out vec3 L, out float pdf, inou
 
     return DisneyEval(mat, V, N, L, pdf);
 }
+
+vec3 DisneySampleSmooth(LabPBRMat mat, vec3 V, vec3 N, out vec3 L, out float pdf, inout uint seed, out uint lobeType) {
+    pdf = 1.0; 
+    vec3 T, B;
+    Onb(N, T, B);
+
+    vec3 localV = ToLocal(T, B, N, V);
+    float r = rand(seed);
+    float eta = (localV.z > 0.0) ? (1.0 / mat.ior) : mat.ior;
+    float cosThetaI = abs(localV.z);
+    float F = DielectricFresnel(cosThetaI, eta);
+
+    vec3 localL;
+
+    if (r < F) {
+        lobeType = 1;
+        localL = vec3(-localV.x, -localV.y, localV.z);
+
+        L = ToWorld(T, B, N, localL);
+        
+        return mix(mat.f0, vec3(1.0), SchlickWeight(cosThetaI));
+
+    } else {
+        lobeType = 2;
+        localL = refract(-localV, vec3(0.0, 0.0, 1.0), eta);
+
+        if (localL == vec3(0.0)) {
+            localL = vec3(-localV.x, -localV.y, localV.z);
+            L = ToWorld(T, B, N, localL);
+            return vec3(1.0); 
+        }
+
+        L = ToWorld(T, B, N, localL);
+
+        return mat.albedo; 
+    }
+}
+
 
 #endif

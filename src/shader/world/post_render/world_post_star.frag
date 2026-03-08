@@ -30,6 +30,7 @@ void main() {
     float rainAttenuation = 1.0 - progress;
 
     vec4 color = colorLayer;
+    color.a *= 1.0 - progress;
     float visibility = clamp(color.a * rainAttenuation, 0.0, 1.0);
 
     color.rgb *= rainAttenuation;

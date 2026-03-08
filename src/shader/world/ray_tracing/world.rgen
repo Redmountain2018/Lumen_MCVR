@@ -102,9 +102,8 @@ layout(location = 0) rayPayloadEXT PrimaryRay mainRay;
 
 #define NUM_PSR_PER_RAY 2
 
-// Disables the vanilla-style render-distance fog band that tends to read as a bright ring
-// (especially at night / when flying above clouds). Underwater fog is kept.
-#define DISABLE_RENDER_DISTANCE_FOG 1
+
+#define DISABLE_RENDER_DISTANCE_FOG 0
 
 vec3 applyFog(vec3 radiance, float t, float fogStart, float dBase, float dFog, vec3 fogRadiance) {
     float opticalDepth = 0.0;
@@ -539,8 +538,8 @@ void main() {
     float densityAir = 0.0000;
     float densityFog = 2.0 / max(worldUBO.fogEnd - worldUBO.fogStart, 1e-3);
     if (skyUBO.cameraSubmersionType == 1) { // underwater
-        vec3 waterColor = skyUBO.envWaterTintFog.rgb;
-        float waterFogStrength = max(0.0, skyUBO.envWaterTintFog.a);
+        vec3 waterColor = vec3(0.8, 0.85, 1.0);
+        float waterFogStrength = 0.1;//max(0.0, skyUBO.envWaterTintFog.a);
         mainRay.radiance *= waterColor;
 
         if (surfaceDepth == INF_DISTANCE) surfaceDepth = 0;
@@ -559,7 +558,7 @@ void main() {
                 vec3 sunDir = normalize(skyUBO.sunDirection);
                 vec3 rayDir = orgDirection;
                 float progress = clamp(skyUBO.rainGradient * skyUBO.envSky.y, 0.0, 1.0);
-                vec3 rainyRadiance = mix(vec3(0.04, 0.05, 0.1), vec3(0.1), smoothstep(-0.3, 0.3, sunDir.y));
+                vec3 rainyRadiance = mix(vec3(0.2, 0.25, 0.3), vec3(0.5), smoothstep(-0.3, 0.3, sunDir.y));
                 vec3 sunnyRadiance = texture(skyFull, rayDir).rgb * skyUBO.envSky.x;
                 vec3 fogRadiance = mix(sunnyRadiance, rainyRadiance, progress);
 

@@ -135,7 +135,7 @@ void main() {
         float daySky = smoothstep(-0.10, 0.02, sunDir.y);
 
         float progress = clamp(skyUBO.rainGradient * skyUBO.envSky.y, 0.0, 1.0);
-        vec3 rainyRadiance = mix(vec3(0.0), vec3(0.1), smoothstep(-0.3, 0.3, sunDir.y));
+        vec3 rainyRadiance = mix(vec3(0.0), vec3(0.3), smoothstep(-0.3, 0.3, sunDir.y));
         vec3 sunnyRadiance = texture(skyFull, rayDir).rgb * skyUBO.envSky.x;
         vec3 skyRadiance = mix(sunnyRadiance, rainyRadiance, progress) * daySky;
         mainRay.radiance += skyRadiance * mainRay.throughput;
@@ -148,18 +148,18 @@ void main() {
                     vec3 pWorld = gl_WorldRayOriginEXT;
                     vec3 pPlanet = pWorld - C;
 
-                    float tG0, tG1;
-                    bool hitGround = intersectSphere(pPlanet, rd, skyUBO.Rg, tG0, tG1);
-                    bool blocked = hitGround && (tG1 > 0.0);
-                    if (!blocked) {
-                        float r = length(pPlanet);
-                        vec3 up = pPlanet / max(r, 1e-6);
-                        float mu = clamp(dot(up, sunDir), -1.0, 1.0);
-                        r = clamp(r, skyUBO.Rg, skyUBO.Rt);
-                        vec3 T = sampleTransmittance(r, mu);
-                        vec3 sunRadiance = (sunSample.rgb * skyUBO.sunRadiance * skyUBO.sunColor * skyUBO.envCelestial.z * T * sunSample.a) * daySky;
-                        mainRay.radiance += mix(sunRadiance, vec3(0.0), progress) * mainRay.throughput;
-                    }
+                    //float tG0, tG1;
+                    //bool hitGround = intersectSphere(pPlanet, rd, skyUBO.Rg, tG0, tG1);
+                    //bool blocked = hitGround && (tG1 > 0.0);
+                    //if (!blocked) {
+                    float r = length(pPlanet);
+                    vec3 up = pPlanet / max(r, 1e-6);
+                    float mu = clamp(dot(up, sunDir), -1.0, 1.0);
+                    r = clamp(r, skyUBO.Rg, skyUBO.Rt);
+                    vec3 T = sampleTransmittance(r, mu);
+                    vec3 sunRadiance = (sunSample.rgb * skyUBO.sunRadiance * skyUBO.sunColor * skyUBO.envCelestial.z * T * sunSample.a) * daySky;
+                    mainRay.radiance += mix(sunRadiance, vec3(0.0), progress) * mainRay.throughput;
+                    //}
                 }
             }
 
@@ -173,19 +173,19 @@ void main() {
                     vec3 pWorld = gl_WorldRayOriginEXT;
                     vec3 pPlanet = pWorld - C;
 
-                    float tG0, tG1;
-                    bool hitGround = intersectSphere(pPlanet, rd, skyUBO.Rg, tG0, tG1);
-                    bool blocked = hitGround && (tG1 > 0.0);
-                    if (!blocked) {
-                        float r = length(pPlanet);
-                        vec3 up = pPlanet / max(r, 1e-6);
-                        float mu = clamp(dot(up, moonDir), -1.0, 1.0);
-                        r = clamp(r, skyUBO.Rg, skyUBO.Rt);
-                        vec3 T = sampleTransmittance(r, mu);
-                        // Scale down moon radiance by 95% for subtle physical moon
-                        vec3 moonRadiance = (moonSample.rgb * skyUBO.moonRadiance * skyUBO.envCelestial.w * T * moonSample.a) * 0.05;
-                        mainRay.radiance += mix(moonRadiance, vec3(nightCompensite), progress) * mainRay.throughput;
-                    }
+                    //float tG0, tG1;
+                    //bool hitGround = intersectSphere(pPlanet, rd, skyUBO.Rg, tG0, tG1);
+                    //bool blocked = hitGround && (tG1 > 0.0);
+                    //if (!blocked) {
+                    float r = length(pPlanet);
+                    vec3 up = pPlanet / max(r, 1e-6);
+                    float mu = clamp(dot(up, moonDir), -1.0, 1.0);
+                    r = clamp(r, skyUBO.Rg, skyUBO.Rt);
+                    vec3 T = sampleTransmittance(r, mu);
+                    // Scale down moon radiance by 95% for subtle physical moon
+                    vec3 moonRadiance = (moonSample.rgb * skyUBO.moonRadiance * skyUBO.envCelestial.w * T * moonSample.a) * 0.05;
+                    mainRay.radiance += mix(moonRadiance, vec3(nightCompensite), progress) * mainRay.throughput;
+                    //}
                 } else {
                     mainRay.radiance += nightCompensite * mainRay.throughput;
                 }

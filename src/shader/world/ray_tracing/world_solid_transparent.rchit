@@ -86,6 +86,68 @@ layout(location = 0) rayPayloadInEXT PrimaryRay mainRay;
 layout(location = 1) rayPayloadEXT ShadowRay shadowRay;
 hitAttributeEXT vec2 attribs;
 
+vec2 wavedx(vec2 position, vec2 direction, float frequency, float timeshift)
+{
+    float x = dot(direction, position) * frequency + timeshift;
+    float wave = exp(sin(x) - 1.0);
+    float dx = wave * cos(x);
+    return vec2(wave, -dx);
+}
+
+
+float getwaves(vec2 position)
+{
+    float wavePhaseShift = length(position) * 0.1;
+
+    float iter = 0.0;
+    float frequency = 1.5;
+    float weight = 0.25;
+    float timeMultiplier = 1.0;
+    float sumOfValues = 0.0;
+    float sumOfWeights = 0.0;
+
+    for(int i = 0; i < 20; i++)
+    {
+        vec2 p = vec2(sin(iter), cos(iter));
+
+        vec2 res = wavedx(
+            position,
+            p,
+            frequency,
+            worldUbo.gameTime * 3000.0 * timeMultiplier + wavePhaseShift
+        );
+
+        position += p * res.y * weight * 0.38;
+
+        sumOfValues += res.x * weight;
+        sumOfWeights += weight;
+
+        weight = mix(weight, 0.0, 0.12);
+        frequency *= 1.17;
+        timeMultiplier *= 1.05;
+
+        iter += 1261152.3999531981663;
+    }
+
+    return sumOfValues / sumOfWeights;
+}
+
+
+vec3 calculateNormalWater(vec2 uv)
+{
+    float e = 0.01;
+
+    float H  = getwaves(uv) * 0.15;
+    float Hx = getwaves(uv - vec2(e,0)) * 0.15;
+    float Hz = getwaves(uv + vec2(0,e)) * 0.15;
+
+    vec3 p  = vec3(uv.x, H,  uv.y);
+    vec3 px = vec3(uv.x - e, Hx, uv.y);
+    vec3 pz = vec3(uv.x, Hz, uv.y + e);
+
+    return normalize(cross(p - px, p - pz));
+}
+
 vec3 calculateNormal(vec3 p0, vec3 p1, vec3 p2, vec2 uv0, vec2 uv1, vec2 uv2, vec3 matNormal, vec3 viewDir) {
     vec3 edge1 = p1 - p0;
     vec3 edge2 = p2 - p0;
@@ -130,6 +192,20 @@ vec3 calculateNormal(vec3 p0, vec3 p1, vec3 p2, vec2 uv0, vec2 uv1, vec2 uv2, ve
         return geometricNormalWorld;
     else
         return finalNormal;
+}
+
+bool compareVec(vec3 a, vec3 b) {
+    const float e = 0.001;
+    return !any(greaterThan(abs(a - b), vec3(e)));
+}
+
+bool compareVec(vec3 a, vec3 b, float e) {
+    return !any(greaterThan(abs(a - b), vec3(e)));
+}
+
+bool compareVec(vec4 a, vec4 b) {
+    const float e = 0.001;
+    return !any(greaterThan(abs(a - b), vec4(e)));
 }
 
 void main() {
@@ -232,11 +308,28 @@ void main() {
     }
 
     albedoValue = vec4(tint, albedoValue.a);
+
+
     LabPBRMat mat = convertLabPBRMaterial(albedoValue, specularValue, normalValue);
     // the provided normal is unreliable! (such as grass, etc.)
     // calculate on the fly for now
     vec3 normal =
         calculateNormal(v0.pos, v1.pos, v2.pos, v0.textureUV, v1.textureUV, v2.textureUV, mat.normal, viewDir);
+
+    bool isWater = false;
+    if (flagValue.g == 255) {
+        isWater = true;
+        albedoValue = vec4(0.8, 0.85, 1.0, 0.5);
+        mat.albedo = albedoValue.rgb;
+        mat.f0 = vec3(0.1); 
+        mat.roughness = 0.001;
+        mat.metallic = 0.0;
+        mat.transmission = 1.0;
+        mat.ior = 1.33;
+        mat.emission = 0.0;
+        if (dot(normal, vec3(0.0, 1.0, 0.0)) > 0.5)
+            normal = calculateNormalWater((worldPos.xz + vec2(worldUbo.cameraPos.xz)));
+    }
 
 
     // --- 添加湿润效果：仅在下雨时，且当前点露天（无上方遮挡）时应用 ---
@@ -269,16 +362,31 @@ void main() {
         shadowRay = savedShadowRay;
 
         if (isExposed) {
-            float wetness = skyUBO.rainGradient;
-            float minRoughness = 0.01;
-            float maxRoughness = mat.roughness;
-            mat.roughness = mix(minRoughness, maxRoughness, 1.0 - wetness); // 越湿润越光滑
-            mat.albedo.rgb *= (1.0 - 0.2 * wetness); // 雨水会略微降低反射率，增加暗沉感
-            if (mat.metallic == 0.0) {
-                vec3 targetF0 = vec3(0.12);             // 比默认的 0.04 明显增强
-                float factor = wetness * 0.8;            // 控制插值强度，最大影响80%
-                mat.f0 = mix(mat.f0, targetF0, factor);
+            if(!isWater){
+                float wetness = skyUBO.rainGradient;
+                float minRoughness = 0.005;
+                float maxRoughness = mat.roughness;
+                mat.roughness = mix(minRoughness, maxRoughness, 1.0 - wetness); // 越湿润越光滑
+                mat.albedo.rgb *= (1.0 - 0.3 * wetness); // 雨水会略微降低反射率，增加暗沉感
+                if (mat.metallic == 0.0) {
+                    vec3 targetF0 = vec3(0.2);             // 比默认的 0.04 明显增强
+                    float factor = wetness * 0.8;            // 控制插值强度，最大影响80%
+                    mat.f0 = mix(mat.f0, targetF0, factor);
+                }
+
+                // 4. 减弱法线贴图影响：根据湿润强度向几何法线混合
+                // 重新计算几何法线（未受法线贴图影响的真实表面法线）
+                vec3 edge1 = v1.pos - v0.pos;
+                vec3 edge2 = v2.pos - v0.pos;
+                vec3 geoNormalObj = normalize(cross(edge1, edge2));
+                mat3 normalMatrix = transpose(mat3(gl_WorldToObject3x4EXT));
+                vec3 geometricNormalWorld = normalize(normalMatrix * geoNormalObj);
+                // 混合：几何法线占主导的程度随 wetness 增加
+                float normalStrength = 1.0 - wetness * 0.8; // 0.8 是最大减弱系数，可调
+                normal = normalize(mix(geometricNormalWorld, normal, normalStrength));
             }
+
+
         }
 }
 
@@ -350,9 +458,19 @@ void main() {
         }
 
         mainRay.radiance += finalLightRadiance;
-
         mainRay.directLightRadiance = finalLightRadiance;
         mainRay.directLightHitT = shadowRay.hitT;
+
+        if (isWater) {
+            // energy is not conserved
+            float waterLobe = GTR(dot(normal, normalize(viewDir + lightDir)), 0.0001 * 0.0001, 1.2) * 0.1; // tweak
+            vec3 specular = lightContribution * mainRay.throughput * waterLobe;
+            vec3 finalSpecular = mix(specular, vec3(0.0), progress);
+
+            mainRay.radiance += finalSpecular;
+            mainRay.directLightRadiance += finalSpecular;
+        }
+
     }
 
     mainRay.instanceIndex = instanceID;
@@ -370,7 +488,13 @@ void main() {
     vec3 sampleDir;
     float pdf;
     uint lobeType;
-    vec3 bsdf = DisneySample(mat, viewDir, normal, sampleDir, pdf, mainRay.seed, lobeType);
+    vec3 bsdf;
+    if(isWater){
+        bsdf = DisneySampleSmooth(mat, viewDir, normal, sampleDir, pdf, mainRay.seed, lobeType);
+    } 
+    else {
+        bsdf = DisneySample(mat, viewDir, normal, sampleDir, pdf, mainRay.seed, lobeType);
+    }
 
     mainRay.throughput *= bsdf / max(pdf, 1e-4);
     mainRay.lobeType = lobeType;
