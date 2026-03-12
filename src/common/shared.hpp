@@ -245,8 +245,9 @@ namespace Data {
 
         T_UINT endSkyTextureID;
         T_UINT endPortalTextureID;
-        T_UINT pad4;
+        T_UINT rippleTextureID;
         T_UINT pad5;
+        
     };
 
     struct SkyUBO {

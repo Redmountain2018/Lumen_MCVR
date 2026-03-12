@@ -81,10 +81,162 @@ layout(push_constant) uniform PushConstant {
     int flags;
 } pc;
 #define SIMPLIFIED_INDIRECT ((pc.flags & 1) != 0)
-
+#define USE_BILATERAL_RAIN 0
 layout(location = 0) rayPayloadInEXT PrimaryRay mainRay;
 layout(location = 1) rayPayloadEXT ShadowRay shadowRay;
 hitAttributeEXT vec2 attribs;
+float frameTime;
+
+float random(vec2 st) {
+    return fract(sin(dot(st.xy, vec2(12.9898, 78.233))) * 43758.5453123);
+}
+
+float smoothNoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f*f*(3.0-2.0*f);
+    float a = random(i);
+    float b = random(i + vec2(1.0, 0.0));
+    float c = random(i + vec2(0.0, 1.0));
+    float d = random(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+vec3 linearToSrgb(vec3 c) {
+    vec3 lo = c * 12.92;
+    vec3 hi = 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055;
+    return mix(lo, hi, step(vec3(0.0031308), c));
+}
+
+vec3 srgbToLinear(vec3 c) {
+    vec3 lo = c / 12.92;
+    vec3 hi = pow((c + 0.055) / 1.055, vec3(2.4));
+    return mix(lo, hi, step(vec3(0.04045), c));
+}
+
+vec3 GetRainAnimationTex(sampler2D tex, vec2 uv, float wet) {
+    float frame = mod(floor(frameTime * 60.0), 60.0);
+    // 修正 UV 计算，确保在 [0,1]
+    float v = uv.y / 60.0 - frame / 60.0;
+    v = v - floor(v);  // 等价于 fract，处理负值
+    vec2 coord = vec2(fract(uv.x), v);
+
+    // 采样法线贴图（纹理被错误加载为 sRGB 格式）
+    vec3 texValue = textureLod(tex, coord, 0.0).rgb;
+    
+    // 修复：如果纹理以 sRGB 格式加载，GPU 已自动进行 sRGB->linear 转换
+    // 但法线数据原本是线性值，需要反转这个转换
+    texValue = linearToSrgb(texValue);  // 新增这一行
+
+    // 法线贴图通常存储为 (0.5,0.5,1.0) 表示 (0,0,1)，需要转换到 [-1,1]
+    vec3 n = texValue * 2.0 - 1.0;
+    n.y *= -1.0;
+    return n;
+}
+
+vec3 BilateralRainTex(sampler2D tex, vec2 uv, float wet) {
+    vec3 n  = GetRainAnimationTex(tex, uv, wet);
+    vec3 nR = GetRainAnimationTex(tex, uv + vec2(1.0, 0.0) / 128.0, wet);
+    vec3 nU = GetRainAnimationTex(tex, uv + vec2(0.0, 1.0) / 128.0, wet);
+    vec3 nUR= GetRainAnimationTex(tex, uv + vec2(1.0, 1.0) / 128.0, wet);
+    vec2 fractCoord = fract(uv * 128.0);
+    vec3 lerpX  = mix(n, nR, fractCoord.x);
+    vec3 lerpX2 = mix(nU, nUR, fractCoord.x);
+    vec3 lerpY  = mix(lerpX, lerpX2, fractCoord.y);
+    return lerpY;
+}
+
+vec2 getRainDropOffset(vec3 worldPos, float wetness, vec3 worldNormal) {
+
+    frameTime = worldUbo.gameTime * 3000.0; 
+
+    // 构建基础坐标
+    vec3 pos = worldPos * 0.5;
+    vec2 uv = pos.xz;
+
+    vec3 n1 = vec3(0.0);
+    #ifdef RAIN_SPLASH_BILATERAL
+        n1 = BilateralRainTex(textures[nonuniformEXT(worldUbo.rippleTextureID)], uv, wetness);
+    #else
+        n1 = GetRainAnimationTex(textures[nonuniformEXT(worldUbo.rippleTextureID)], uv, wetness);
+    #endif
+
+    pos.x -= frameTime * 1.5;
+    float downfall = smoothNoise(pos.xz * 0.0025);
+    downfall = clamp(downfall * 1.5 - 0.25, 0.0, 1.0);
+
+    vec3 n = n1 * 0.4; // n1 已经是 [-1,1] 范围，缩放为 [-0.4,0.4]
+    n.xy *= wetness; // 湿润度越高，偏移越大（wetness 已包含 rainGradient）
+
+    float verticalFactor = clamp(worldNormal.y, 0.0, 1.0);
+    n = mix(vec3(0.0, 0.0, 1.0), n, verticalFactor);
+
+    return n.xy;
+}
+
+
+vec2 getWaterOffset(vec3 worldPos, float wetness, vec3 surfaceNormal) {
+    // --- 可调参数 ---
+    float baseSpeed = 3000.0;           // 与波浪速度基准一致（或单独调节）
+    float scale = 0.5;                   // 空间缩放（原版 pos *= 0.5）
+    float amplitude = 0.2;                // 基础扰动幅度
+    // ----------------
+
+    float time = worldUbo.gameTime * baseSpeed;  // 统一时间基准
+
+    // 构建基础坐标
+    vec2 p = worldPos.xz * scale;
+
+    // 多层噪声叠加（仿波浪的20层迭代，这里只用3层平衡性能）
+    float iter = 0.0;
+    float weightSum = 0.0;
+    vec2 offset = vec2(0.0);
+
+    // 第一层：主方向，速度乘数1.0
+    {
+        vec2 dir = vec2(sin(iter), cos(iter));
+        vec2 uv = p * 2.0 + dir * time * 1.0;
+        float n = smoothNoise(uv) * 2.0 - 1.0;
+        offset += dir * n * 0.6;          // 权重0.6
+        weightSum += 0.6;
+        iter += 1.0;
+    }
+    // 第二层：不同方向，速度稍慢
+    {
+        vec2 dir = vec2(sin(iter), cos(iter));
+        vec2 uv = p * 3.0 + dir * time * 0.7;
+        float n = smoothNoise(uv) * 2.0 - 1.0;
+        offset += dir * n * 0.3;
+        weightSum += 0.3;
+        iter += 2.0;
+    }
+    // 第三层：更精细的扰动，速度更慢
+    {
+        vec2 dir = vec2(sin(iter), cos(iter));
+        vec2 uv = p * 4.0 + dir * time * 0.4;
+        float n = smoothNoise(uv) * 2.0 - 1.0;
+        offset += dir * n * 0.1;
+        weightSum += 0.1;
+    }
+
+    offset /= weightSum;  // 归一化
+
+    // 模拟原版 downfall 低频调制（额外噪声层）
+    vec2 uv_downfall = p * 0.1 + vec2(time * 0.1, 0.0);
+    float downfall = smoothNoise(uv_downfall);
+    downfall = clamp(downfall * 1.5 - 0.25, 0.0, 1.0);
+
+    // 幅度随湿润度和 downfall 调整
+    float amp = amplitude * wetness * (0.8 + 0.4 * downfall);
+
+    // 根据表面陡峭程度减弱
+    float verticalFactor = dot(surfaceNormal, vec3(0.0, 1.0, 0.0));
+    verticalFactor = clamp(verticalFactor * 2.0 - 0.5, 0.0, 1.0);
+    amp *= verticalFactor;
+
+    return offset * amp;
+}
+
 
 vec2 wavedx(vec2 position, vec2 direction, float frequency, float timeshift)
 {
@@ -327,13 +479,17 @@ void main() {
         mat.transmission = 1.0;
         mat.ior = 1.33;
         mat.emission = 0.0;
-        if (dot(normal, vec3(0.0, 1.0, 0.0)) > 0.5)
-            normal = calculateNormalWater((worldPos.xz + vec2(worldUbo.cameraPos.xz)));
+        if (dot(normal, vec3(0.0, 1.0, 0.0)) > 0.5){
+            vec2 WaterOffset = getWaterOffset(worldPos, 1.0f, normal);
+            normal = normalize(normal + vec3(WaterOffset.x, 0.0, WaterOffset.y));
+        }
+            //normal = calculateNormalWater((worldPos.xz + vec2(worldUbo.cameraPos.xz)));
+
     }
 
-
+    #define ENABLE_WETNESS_SMOOTH_TRANSITION 0
     // --- 添加湿润效果：仅在下雨时，且当前点露天（无上方遮挡）时应用 ---
-    if (skyUBO.rainGradient > 0.0) {
+    if (skyUBO.rainGradient > 0.0 && mainRay.index == 0) {
         vec3 upDir = vec3(0.0, 1.0, 0.0);                       // 世界向上方向（假设Y轴向上）
         vec3 rayOrigin = worldPos + normal * 0.001;              // 偏移避免自遮挡
 
@@ -343,7 +499,7 @@ void main() {
         shadowRay.hitT = INF_DISTANCE;
 
         traceRayEXT(topLevelAS,
-                    gl_RayFlagsTerminateOnFirstHitEXT,           // 找到第一个命中即停止
+                    gl_RayFlagsTerminateOnFirstHitEXT,        // 找到第一个命中即停止
                     WORLD_MASK,                                   // 只检测世界方块
                     0,                                            // sbtRecordOffset
                     0,                                            // sbtRecordStride
@@ -356,40 +512,55 @@ void main() {
                     );
 
         // 如果 hitT 仍是无穷大，说明未命中任何物体 → 露天
-        bool isExposed = (shadowRay.hitT >= INF_DISTANCE);
+        bool isExposed;
+        float exposure;
+        float wetness;
+        float hitDist = shadowRay.hitT;  // 保存距离，避免恢复后丢失
+        shadowRay = savedShadowRay;       // 立即恢复
+        // 计算暴露因子 exposure (0~1)
+        if(ENABLE_WETNESS_SMOOTH_TRANSITION == 1){
+            float minDist = 0.5;                 // 完全遮挡的距离
+            float maxDist = 1.5;                 // 完全露天的距离（增大可使过渡更柔和）
+            exposure = smoothstep(minDist, maxDist, hitDist);
+            wetness = skyUBO.rainGradient * exposure;
+        }
+        else{
+            isExposed = (hitDist >= INF_DISTANCE);
+            wetness = isExposed ? skyUBO.rainGradient : 0.0;
+        }
 
-        // 恢复原来的 shadowRay
-        shadowRay = savedShadowRay;
-
-        if (isExposed) {
-            if(!isWater){
-                float wetness = skyUBO.rainGradient;
-                float minRoughness = 0.005;
-                float maxRoughness = mat.roughness;
-                mat.roughness = mix(minRoughness, maxRoughness, 1.0 - wetness); // 越湿润越光滑
-                mat.albedo.rgb *= (1.0 - 0.3 * wetness); // 雨水会略微降低反射率，增加暗沉感
-                if (mat.metallic == 0.0) {
-                    vec3 targetF0 = vec3(0.2);             // 比默认的 0.04 明显增强
-                    float factor = wetness * 0.8;            // 控制插值强度，最大影响80%
-                    mat.f0 = mix(mat.f0, targetF0, factor);
-                }
-
-                // 4. 减弱法线贴图影响：根据湿润强度向几何法线混合
-                // 重新计算几何法线（未受法线贴图影响的真实表面法线）
-                vec3 edge1 = v1.pos - v0.pos;
-                vec3 edge2 = v2.pos - v0.pos;
-                vec3 geoNormalObj = normalize(cross(edge1, edge2));
-                mat3 normalMatrix = transpose(mat3(gl_WorldToObject3x4EXT));
-                vec3 geometricNormalWorld = normalize(normalMatrix * geoNormalObj);
-                // 混合：几何法线占主导的程度随 wetness 增加
-                float normalStrength = 1.0 - wetness * 0.8; // 0.8 是最大减弱系数，可调
-                normal = normalize(mix(geometricNormalWorld, normal, normalStrength));
+        if(!isWater){
+            // 重新计算几何法线（未受法线贴图影响的真实表面法线）
+            vec3 edge1 = v1.pos - v0.pos;
+            vec3 edge2 = v2.pos - v0.pos;
+            vec3 geoNormalObj = normalize(cross(edge1, edge2));
+            mat3 normalMatrix = transpose(mat3(gl_WorldToObject3x4EXT));
+            vec3 geometricNormalWorld = normalize(normalMatrix * geoNormalObj);
+            bool isTopFace = geometricNormalWorld.y > 0.9; // 近似判断是否为水平面向上的表面
+            if(!isTopFace){
+                wetness *= 0.8; // 非水平面湿润度减少，避免过于夸张
+            }
+            float minRoughness = 0.001;
+            float maxRoughness = mat.roughness;
+            mat.roughness = mix(minRoughness, maxRoughness, 1.0 - wetness); // 越湿润越光滑
+            mat.albedo.rgb *= (1.0 - 0.3 * wetness); // 雨水会略微降低反射率，增加暗沉感
+            if (mat.metallic == 0.0) {
+                vec3 targetF0 = vec3(0.2);             // 比默认的 0.04 明显增强
+                float factor = wetness * 0.8;            // 控制插值强度，最大影响80%
+                mat.f0 = mix(mat.f0, targetF0, factor);
             }
 
+            // 4. 减弱法线贴图影响：根据湿润强度向几何法线混合
+            // 混合：几何法线占主导的程度随 wetness 增加
+            float normalStrength = 1.0 - wetness * 0.95; // 0.8 是最大减弱系数，可调
+            normal = normalize(mix(geometricNormalWorld, normal, normalStrength));
+            if (wetness > 0.0 && isTopFace) {
+                vec2 rainOffset = getRainDropOffset(worldPos, wetness, normal);
+                normal = normalize(normal + vec3(rainOffset.x, 0.0, rainOffset.y));
+            }
 
         }
-}
-
+    }
 
 
     // add glowing radiance
@@ -512,3 +683,4 @@ void main() {
     mainRay.direction = sampleDir;
     mainRay.stop = 0;
 }
+
