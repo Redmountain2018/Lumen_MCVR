@@ -81,7 +81,10 @@ layout(push_constant) uniform PushConstant {
     int flags;
 } pc;
 #define SIMPLIFIED_INDIRECT ((pc.flags & 1) != 0)
-#define USE_BILATERAL_RAIN 0
+#define USE_BILATERAL_RAIN 1
+#define WATER_WAVE_HEIGHT 0.5f
+#define WATER_PARALLAX 0
+
 layout(location = 0) rayPayloadInEXT PrimaryRay mainRay;
 layout(location = 1) rayPayloadEXT ShadowRay shadowRay;
 hitAttributeEXT vec2 attribs;
@@ -100,6 +103,14 @@ float smoothNoise(vec2 p) {
     float c = random(i + vec2(0.0, 1.0));
     float d = random(i + vec2(1.0, 1.0));
     return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+float AlmostIdentity(float x, float m, float n) {
+    if (x > m) return x;
+    float a = 2.0 * n - m;
+    float b = 2.0 * m - 3.0 * n;
+    float t = x / m;
+    return (a * t + b) * t * t + n;
 }
 
 vec3 linearToSrgb(vec3 c) {
@@ -177,127 +188,271 @@ vec2 getRainDropOffset(vec3 worldPos, float wetness, vec3 worldNormal) {
 
 vec2 getWaterOffset(vec3 worldPos, float wetness, vec3 surfaceNormal) {
     // --- 可调参数 ---
-    float baseSpeed = 3000.0;           // 与波浪速度基准一致（或单独调节）
-    float scale = 0.5;                   // 空间缩放（原版 pos *= 0.5）
     float amplitude = 0.2;                // 基础扰动幅度
+    float frequencyScale = 50.0;           // 新增：波浪频率控制（默认1.0）
+    float heightScale = 1.5;              // 新增：波浪高度控制（默认1.0）
     // ----------------
 
-    float time = worldUbo.gameTime * baseSpeed;  // 统一时间基准
-
-    // 构建基础坐标
-    vec2 p = worldPos.xz * scale;
-
-    // 多层噪声叠加（仿波浪的20层迭代，这里只用3层平衡性能）
-    float iter = 0.0;
-    float weightSum = 0.0;
-    vec2 offset = vec2(0.0);
-
-    // 第一层：主方向，速度乘数1.0
+    // 使用与 GetWaves 一致的时间基准
+    float frameTime = worldUbo.gameTime * 3000.0 * 30; // 与第151行的 frameTime 保持一致
+    
+    // 构建与 GetWaves 一致的坐标变换，应用频率缩放
+    vec2 p = (worldPos.xz + vec2(worldUbo.cameraPos.xz)) / (5.0f / frequencyScale);  // 修改：除以频率缩放因子
+    //p.xy -= worldPos.y / 10.0f;
+    p.x = -p.x;
+    
+    // 应用时间动画（与 GetWaves 第1层一致的速度）
+    p.x += (frameTime / 40.0f) * 0.9f; // speed = 0.9f, isIce = 0.0f
+    p.y -= (frameTime / 40.0f) * 0.9f;
+    
+    // 保存原始 p 用于后续层计算
+    vec2 p_layer = p;
+    
+    // 初始化权重和偏移
+    float weightSum = 0.0f;
+    vec2 offset = vec2(0.0f);
+    
+    // === 移植 GetWaves 的6层噪声计算，但输出向量而非标量 ===
+    
+    // 第1层：vec2(2.0f, 1.2f) + vec2(0.0f, p.x * 2.1f)
     {
-        vec2 dir = vec2(sin(iter), cos(iter));
-        vec2 uv = p * 2.0 + dir * time * 1.0;
-        float n = smoothNoise(uv) * 2.0 - 1.0;
-        offset += dir * n * 0.6;          // 权重0.6
-        weightSum += 0.6;
-        iter += 1.0;
+        vec2 uv = p_layer * vec2(2.0f, 1.2f) + vec2(0.0f, p_layer.x * 2.1f);
+        float noise = smoothNoise(uv);
+        float weight = 1.0f * 0.5f; // 原始权重1.0 * 0.5（第1层特殊处理）
+        // 方向：基于 p.x * 2.1f，可以理解为主要影响Y方向
+        vec2 dir = normalize(vec2(0.0, 1.0));
+        offset += dir * noise * weight;
+        weightSum += weight;
+        
+        // 更新 p_layer 用于下一层（与 GetWaves 保持一致）
+        p_layer /= 2.1f;
+        p_layer.y -= (frameTime / 20.0f) * 0.9f;
+        p_layer.x -= (frameTime / 30.0f) * 0.9f;
     }
-    // 第二层：不同方向，速度稍慢
+    
+    // 第2层：vec2(2.0f, 1.4f) + vec2(0.0f, -p.x * 2.1f)
     {
-        vec2 dir = vec2(sin(iter), cos(iter));
-        vec2 uv = p * 3.0 + dir * time * 0.7;
-        float n = smoothNoise(uv) * 2.0 - 1.0;
-        offset += dir * n * 0.3;
-        weightSum += 0.3;
-        iter += 2.0;
+        vec2 uv = p_layer * vec2(2.0f, 1.4f) + vec2(0.0f, -p_layer.x * 2.1f);
+        float noise = smoothNoise(uv);
+        float weight = 2.1f;
+        // 方向：反向Y方向
+        vec2 dir = normalize(vec2(0.0, -1.0));
+        offset += dir * noise * weight;
+        weightSum += weight;
+        
+        p_layer /= 1.5f;
+        p_layer.x += (frameTime / 20.0f) * 0.9f;
     }
-    // 第三层：更精细的扰动，速度更慢
+    
+    // 第3层：vec2(1.0f, 0.75f) + vec2(0.0f, p.x * 1.1f)
     {
-        vec2 dir = vec2(sin(iter), cos(iter));
-        vec2 uv = p * 4.0 + dir * time * 0.4;
-        float n = smoothNoise(uv) * 2.0 - 1.0;
-        offset += dir * n * 0.1;
-        weightSum += 0.1;
+        vec2 uv = p_layer * vec2(1.0f, 0.75f) + vec2(0.0f, p_layer.x * 1.1f);
+        float noise = smoothNoise(uv);
+        float weight = 17.25f;
+        vec2 dir = normalize(vec2(0.0, 1.0));
+        offset += dir * noise * weight;
+        weightSum += weight;
+        
+        p_layer /= 1.5f;
+        p_layer.x -= (frameTime / 55.0f) * 0.9f;
     }
-
-    offset /= weightSum;  // 归一化
-
-    // 模拟原版 downfall 低频调制（额外噪声层）
-    vec2 uv_downfall = p * 0.1 + vec2(time * 0.1, 0.0);
-    float downfall = smoothNoise(uv_downfall);
-    downfall = clamp(downfall * 1.5 - 0.25, 0.0, 1.0);
-
-    // 幅度随湿润度和 downfall 调整
-    float amp = amplitude * wetness * (0.8 + 0.4 * downfall);
-
-    // 根据表面陡峭程度减弱
+    
+    // 第4层：vec2(1.0f, 0.75f) + vec2(0.0f, -p.x * 1.7f)
+    {
+        vec2 uv = p_layer * vec2(1.0f, 0.75f) + vec2(0.0f, -p_layer.x * 1.7f);
+        float noise = smoothNoise(uv);
+        float weight = 15.25f;
+        vec2 dir = normalize(vec2(0.0, -1.0));
+        offset += dir * noise * weight;
+        weightSum += weight;
+        
+        p_layer /= 1.9f;
+        p_layer.x += (frameTime / 155.0f) * 0.9f;
+    }
+    
+    // 第5层：有特殊处理 (abs * 2.0 - 1.0) 和 AlmostIdentity
+    {
+        vec2 uv = p_layer * vec2(1.0f, 0.8f) + vec2(0.0f, -p_layer.x * 1.7f);
+        float noise = abs(smoothNoise(uv) * 2.0 - 1.0);
+        noise = 1.0 - AlmostIdentity(noise, 0.2f, 0.1f);
+        float weight = 29.25f;
+        vec2 dir = normalize(vec2(0.0, -1.0));
+        offset += dir * noise * weight;
+        weightSum += weight;
+        
+        p_layer /= 2.0f;
+        p_layer.x += (frameTime / 155.0f) * 0.9f;
+    }
+    
+    // 第6层
+    {
+        vec2 uv = p_layer * vec2(1.0f, 0.8f) + vec2(0.0f, p_layer.x * 1.7f);
+        float noise = abs(smoothNoise(uv) * 2.0 - 1.0);
+        noise = 1.0 - AlmostIdentity(noise, 0.2f, 0.1f);
+        float weight = 15.25f;
+        vec2 dir = normalize(vec2(0.0, 1.0));
+        offset += dir * noise * weight;
+        weightSum += weight;
+    }
+    
+    // 归一化（与 GetWaves 一致）
+    if (weightSum > 0.0) {
+        offset /= weightSum;
+    }
+    
+    // 应用高度缩放
+    offset *= heightScale;  // 新增：控制波浪高度
+    
+    // 幅度调整（保持与原 getWaterOffset 一致的湿润度处理）
+    float amp = amplitude * wetness;
+    
+    // 根据表面陡峭程度减弱（与原 getWaterOffset 一致）
     float verticalFactor = dot(surfaceNormal, vec3(0.0, 1.0, 0.0));
     verticalFactor = clamp(verticalFactor * 2.0 - 0.5, 0.0, 1.0);
     amp *= verticalFactor;
-
+    
     return offset * amp;
 }
 
+float GetWaves(vec3 position, float scale, float frameTime, float isIce) {
+    float speed = 0.9f;
+    speed = mix(speed, 0.0f, isIce);
 
-vec2 wavedx(vec2 position, vec2 direction, float frequency, float timeshift)
-{
-    float x = dot(direction, position) * frequency + timeshift;
-    float wave = exp(sin(x) - 1.0);
-    float dx = wave * cos(x);
-    return vec2(wave, -dx);
+    vec2 p = position.xz / 5.0f;
+    p.xy -= position.y / 10.0f;
+    p.x = -p.x;
+
+    p.x += (frameTime / 40.0f) * speed;
+    p.y -= (frameTime / 40.0f) * speed;
+
+    float weight = 1.0f;
+    float weights = weight;
+    float allwaves = 0.0f;
+
+    // 第1层：替换 textureSmooth 为 smoothNoise
+    float wave = smoothNoise((p * vec2(2.0f, 1.2f)) + vec2(0.0f, p.x * 2.1f));
+    p /= 2.1f;
+    p.y -= (frameTime / 20.0f) * speed;
+    p.x -= (frameTime / 30.0f) * speed;
+    allwaves += wave * 0.5;
+
+    // 第2层
+    weight = 2.1f;
+    weights += weight;
+    wave = smoothNoise((p * vec2(2.0f, 1.4f)) + vec2(0.0f, -p.x * 2.1f));
+    p /= 1.5f;
+    p.x += (frameTime / 20.0f) * speed;
+    wave *= weight;
+    allwaves += wave;
+
+    // 第3层
+    weight = 17.25f;
+    weights += weight;
+    wave = smoothNoise((p * vec2(1.0f, 0.75f)) + vec2(0.0f, p.x * 1.1f));
+    p /= 1.5f;
+    p.x -= (frameTime / 55.0f) * speed;
+    wave *= weight;
+    allwaves += wave;
+
+    // 第4层
+    weight = 15.25f;
+    weights += weight;
+    wave = smoothNoise((p * vec2(1.0f, 0.75f)) + vec2(0.0f, -p.x * 1.7f));
+    p /= 1.9f;
+    p.x += (frameTime / 155.0f) * speed;
+    wave *= weight;
+    allwaves += wave;
+
+    // 第5层（有特殊处理）
+    weight = 29.25f;
+    weights += weight;
+    wave = abs(smoothNoise((p * vec2(1.0f, 0.8f)) + vec2(0.0f, -p.x * 1.7f)) * 2.0 - 1.0);
+    p /= 2.0f;
+    p.x += (frameTime / 155.0f) * speed;
+    wave = 1.0 - AlmostIdentity(wave, 0.2f, 0.1f);
+    wave *= weight;
+    allwaves += wave;
+
+    // 第6层
+    weight = 15.25f;
+    weights += weight;
+    wave = abs(smoothNoise((p * vec2(1.0f, 0.8f)) + vec2(0.0f, p.x * 1.7f)) * 2.0 - 1.0);
+    wave = 1.0 - AlmostIdentity(wave, 0.2f, 0.1f);
+    wave *= weight;
+    allwaves += wave;
+
+    allwaves /= weights;
+    return allwaves;
 }
 
-
-float getwaves(vec2 position)
-{
-    float wavePhaseShift = length(position) * 0.1;
-
-    float iter = 0.0;
-    float frequency = 1.5;
-    float weight = 0.25;
-    float timeMultiplier = 1.0;
-    float sumOfValues = 0.0;
-    float sumOfWeights = 0.0;
-
-    for(int i = 0; i < 20; i++)
-    {
-        vec2 p = vec2(sin(iter), cos(iter));
-
-        vec2 res = wavedx(
-            position,
-            p,
-            frequency,
-            worldUbo.gameTime * 3000.0 * timeMultiplier + wavePhaseShift
-        );
-
-        position += p * res.y * weight * 0.38;
-
-        sumOfValues += res.x * weight;
-        sumOfWeights += weight;
-
-        weight = mix(weight, 0.0, 0.12);
-        frequency *= 1.17;
-        timeMultiplier *= 1.05;
-
-        iter += 1261152.3999531981663;
+vec3 GetWaterParallaxCoord(vec3 position, vec3 viewVector, float frameTime) {
+    vec3 parallaxCoord = position.xyz;
+    
+    #ifdef WATER_PARALLAX
+    vec3 stepSize = vec3(0.6f * WATER_WAVE_HEIGHT, 0.6f * WATER_WAVE_HEIGHT, 1.0f) * 0.5;
+    float waveHeight = GetWaves(position, 1.0f, frameTime, 0.0f);
+    
+    vec3 pCoord = vec3(0.0f, 0.0f, 1.0f);
+    vec3 step = viewVector * stepSize;
+    float distAngleWeight = 1.0f; // 简化距离角度权重
+    step *= distAngleWeight;
+    
+    float sampleHeight = waveHeight;
+    
+    for (int i = 0; sampleHeight < pCoord.z && i < 60; ++i) {
+        pCoord.xy = mix(pCoord.xy, pCoord.xy + step.xy, 
+                       clamp((pCoord.z - sampleHeight) / (stepSize.z * 0.2f * distAngleWeight / (-viewVector.z + 0.05f)), 0.0f, 1.0f));
+        pCoord.z += step.z;
+        sampleHeight = GetWaves(position + vec3(pCoord.x, 0.0f, pCoord.y), 1.0f, frameTime, 0.0f);
     }
-
-    return sumOfValues / sumOfWeights;
+    
+    parallaxCoord = position.xyz + vec3(pCoord.x, 0.0f, pCoord.y);
+    #endif
+    
+    return parallaxCoord;
 }
 
+vec3 GetWavesNormal(vec3 position, float scale, vec3 viewDir, float frameTime) {
+    vec3 viewVector = normalize(viewDir);
+    
+    #ifdef WATER_PARALLAX
+    position = GetWaterParallaxCoord(position, viewVector, frameTime);
+    #endif
+    
+    const float sampleDistance = 4.0f;
+    position -= vec3(0.005f, 0.0f, 0.005f) * sampleDistance;
+    
+    float wavesCenter = GetWaves(position, scale, frameTime, 0.0f);
+    float wavesLeft = GetWaves(position + vec3(0.01f * sampleDistance, 0.0f, 0.0f), scale, frameTime, 0.0f);
+    float wavesUp   = GetWaves(position + vec3(0.0f, 0.0f, 0.01f * sampleDistance), scale, frameTime, 0.0f);
+    
+    vec3 wavesNormal;
+    wavesNormal.r = wavesCenter - wavesLeft;
+    wavesNormal.g = wavesCenter - wavesUp;
+    
+    wavesNormal.r *= 20.0f * WATER_WAVE_HEIGHT / sampleDistance;
+    wavesNormal.g *= 20.0f * WATER_WAVE_HEIGHT / sampleDistance;
+    
+    wavesNormal.b = 1.0;
+    wavesNormal.rgb = normalize(wavesNormal.rgb);
+    
+    return wavesNormal.rgb;
+}
 
 vec3 calculateNormalWater(vec2 uv)
 {
-    float e = 0.01;
-
-    float H  = getwaves(uv) * 0.15;
-    float Hx = getwaves(uv - vec2(e,0)) * 0.15;
-    float Hz = getwaves(uv + vec2(0,e)) * 0.15;
-
-    vec3 p  = vec3(uv.x, H,  uv.y);
-    vec3 px = vec3(uv.x - e, Hx, uv.y);
-    vec3 pz = vec3(uv.x, Hz, uv.y + e);
-
-    return normalize(cross(p - px, p - pz));
+    // 使用新的波浪法线计算
+    vec3 waterPos = vec3(uv.x, 0.0, uv.y);
+    vec3 viewDir = normalize(vec3(0.0, -1.0, 0.0)); // 垂直向下
+    
+    // 获取时间（使用现有的 frameTime 变量）
+    float currentTime = frameTime; // 第151行：frameTime = worldUbo.gameTime * 3000.0;
+    
+    // 调用波浪法线计算
+    vec3 waveNormal = GetWavesNormal(waterPos, 1.0f, viewDir, currentTime);
+    
+    // 调整坐标系（如果需要）
+    return waveNormal;
 }
 
 vec3 calculateNormal(vec3 p0, vec3 p1, vec3 p2, vec2 uv0, vec2 uv1, vec2 uv2, vec3 matNormal, vec3 viewDir) {
@@ -460,7 +615,7 @@ void main() {
     }
 
     albedoValue = vec4(tint, albedoValue.a);
-
+    // albedoValue = vec4(pow(tint, vec3(2.2)), albedoValue.a);
 
     LabPBRMat mat = convertLabPBRMaterial(albedoValue, specularValue, normalValue);
     // the provided normal is unreliable! (such as grass, etc.)
@@ -471,19 +626,20 @@ void main() {
     bool isWater = false;
     if (flagValue.g == 255) {
         isWater = true;
-        albedoValue = vec4(0.8, 0.85, 1.0, 0.5);
+        albedoValue = vec4(0.8, 0.85, 1.0, 1.0);
         mat.albedo = albedoValue.rgb;
         mat.f0 = vec3(0.1); 
         mat.roughness = 0.001;
         mat.metallic = 0.0;
-        mat.transmission = 1.0;
+        mat.transmission = albedoValue.a;
         mat.ior = 1.33;
         mat.emission = 0.0;
         if (dot(normal, vec3(0.0, 1.0, 0.0)) > 0.5){
             vec2 WaterOffset = getWaterOffset(worldPos, 1.0f, normal);
             normal = normalize(normal + vec3(WaterOffset.x, 0.0, WaterOffset.y));
-        }
             //normal = calculateNormalWater((worldPos.xz + vec2(worldUbo.cameraPos.xz)));
+        }
+
 
     }
 
@@ -528,15 +684,16 @@ void main() {
             isExposed = (hitDist >= INF_DISTANCE);
             wetness = isExposed ? skyUBO.rainGradient : 0.0;
         }
+        // 重新计算几何法线（未受法线贴图影响的真实表面法线）
+        vec3 edge1 = v1.pos - v0.pos;
+        vec3 edge2 = v2.pos - v0.pos;
+        vec3 geoNormalObj = normalize(cross(edge1, edge2));
+        mat3 normalMatrix = transpose(mat3(gl_WorldToObject3x4EXT));
+        vec3 geometricNormalWorld = normalize(normalMatrix * geoNormalObj);
+        bool isTopFace = geometricNormalWorld.y > 0.9; // 近似判断是否为水平面向上的表面
 
         if(!isWater){
-            // 重新计算几何法线（未受法线贴图影响的真实表面法线）
-            vec3 edge1 = v1.pos - v0.pos;
-            vec3 edge2 = v2.pos - v0.pos;
-            vec3 geoNormalObj = normalize(cross(edge1, edge2));
-            mat3 normalMatrix = transpose(mat3(gl_WorldToObject3x4EXT));
-            vec3 geometricNormalWorld = normalize(normalMatrix * geoNormalObj);
-            bool isTopFace = geometricNormalWorld.y > 0.9; // 近似判断是否为水平面向上的表面
+
             if(!isTopFace){
                 wetness *= 0.8; // 非水平面湿润度减少，避免过于夸张
             }
@@ -554,12 +711,14 @@ void main() {
             // 混合：几何法线占主导的程度随 wetness 增加
             float normalStrength = 1.0 - wetness * 0.95; // 0.8 是最大减弱系数，可调
             normal = normalize(mix(geometricNormalWorld, normal, normalStrength));
-            if (wetness > 0.0 && isTopFace) {
-                vec2 rainOffset = getRainDropOffset(worldPos, wetness, normal);
-                normal = normalize(normal + vec3(rainOffset.x, 0.0, rainOffset.y));
-            }
+
 
         }
+        if (wetness > 0.0 && isTopFace) {
+            vec2 rainOffset = getRainDropOffset(worldPos, wetness, normal);
+            normal = normalize(normal + vec3(rainOffset.x, 0.0, rainOffset.y));
+        }
+
     }
 
 

@@ -95,11 +95,11 @@ void main() {
 
     if (useTexture > 0) {
         textureUV = baryCoords.x * v0.textureUV + baryCoords.y * v1.textureUV + baryCoords.z * v2.textureUV;
-        albedo = texture(textures[nonuniformEXT(textureID)], textureUV);
+        albedo = textureLod(textures[nonuniformEXT(textureID)], textureUV, 0.0);
 
         if (!SIMPLIFY_THIS_RAY) {
             int specularTextureID = mapping.entries[textureID].specular;
-            if (specularTextureID >= 0) { specular = texture(textures[nonuniformEXT(specularTextureID)], textureUV); }
+            if (specularTextureID >= 0) { specular = textureLod(textures[nonuniformEXT(specularTextureID)], textureUV, 0.0); }
         }
 
         int flagTextureID = mapping.entries[textureID].flag;
@@ -122,6 +122,16 @@ void main() {
 
     vec3 tint = (albedo * colorLayer).rgb;
     float alpha = (albedo * colorLayer).a;
+    if ((flags.g & 0xFF) == 255) {
+        // 使用与主射线一致的水参数
+        tint = vec3(0.8, 0.85, 1.0);  // 水蓝色
+        alpha = 1.0;                  // 水alpha值（与主射线一致）
+    
+        // 直接进入透射分支，确保一致性
+        shadowRay.throughput *= tint;
+        ignoreIntersectionEXT;
+        return;
+    }
 
     if (!SIMPLIFY_THIS_RAY) {
         uint useGlint = v0.useGlint;
