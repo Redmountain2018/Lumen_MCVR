@@ -188,6 +188,26 @@ vec3 BT2390EETF(vec3 color, float maxLum) {
 }
 
 // ============================================================================
+// HDR Mode 2: ACES Filmictone mapping (approximation by Krzysztof Narkowicz)
+// Input: linear RGB after exposure adjustment.
+// Output: linear RGB scaled to display‑referred range [0, maxLum],
+//         where maxLum = peakNits / paperWhiteNits.
+// ============================================================================
+vec3 ACESFilm(vec3 color, float maxLum) {
+    const float a = 2.51;
+    const float b = 0.03;
+    const float c = 2.43;
+    const float d = 0.59;
+    const float e = 0.14;
+
+    // Scale input by maxLum so the curve works in normalized space
+    vec3 x = color / maxLum;
+    vec3 nom = x * (a * x + b);
+    vec3 denom = x * (c * x + d) + e;
+    return maxLum * clamp(nom / denom, 0.0, 1.0);
+}
+
+// ============================================================================
 // sRGB OETF (IEC 61966-2-1)
 // ============================================================================
 vec3 linearToSRGB(vec3 c) {
@@ -243,7 +263,21 @@ void main() {
     float hdrHeadroom = peak / paperWhite;
 
     // BT.2390 EETF tone mapper — maps scene luminance to display luminance
-    vec3 mapped = BT2390EETF(expColor, hdrHeadroom);
+    vec3 mapped;
+    float mode = gExposure.tonemapMode;
+
+    if(mode < 0.5) {
+        mapped = BT2390EETF(expColor, hdrHeadroom);
+    }
+    else if(mode < 1.5) {
+        mapped = HermiteSplineReinhardToneMap(expColor, gExposure.Lwhite);
+    }
+    else if(mode < 2.5) {
+        mapped = ACESFilm(expColor, hdrHeadroom);
+    }
+    else{
+        mapped = ACESFilm(expColor, hdrHeadroom);
+    }
 
     if (hdr10Output) {
         // ═══════════ HDR10 output path ═══════════

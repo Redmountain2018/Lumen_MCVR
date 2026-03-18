@@ -124,7 +124,7 @@ void main() {
     float alpha = (albedo * colorLayer).a;
     if ((flags.g & 0xFF) == 255) {
         // 使用与主射线一致的水参数
-        tint = vec3(0.8, 0.85, 1.0);  // 水蓝色
+        tint = vec3(0.75, 0.85, 1.0);  // 水蓝色
         alpha = 1.0;                  // 水alpha值（与主射线一致）
     
         // 直接进入透射分支，确保一致性
@@ -156,7 +156,7 @@ void main() {
     // which is equivalent to alpha < (1.0 - 1e-6)
     bool hasTransmission;
     if (SIMPLIFY_THIS_RAY) {
-        hasTransmission = alpha < 0.95;
+        hasTransmission = alpha < 1.0 - EPS;
     } else {
         LabPBRMat mat = convertLabPBRMaterial(albedo * colorLayer, specular, normalVal);
         hasTransmission = mat.transmission > 0.0;

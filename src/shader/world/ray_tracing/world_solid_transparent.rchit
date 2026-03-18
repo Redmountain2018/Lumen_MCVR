@@ -394,7 +394,7 @@ vec3 GetWaterParallaxCoord(vec3 position, vec3 viewVector, float frameTime) {
     
     vec3 pCoord = vec3(0.0f, 0.0f, 1.0f);
     vec3 step = viewVector * stepSize;
-    float distAngleWeight = 1.0f; // 简化距离角度权重
+    float distAngleWeight = 1.0f; 
     step *= distAngleWeight;
     
     float sampleHeight = waveHeight;
@@ -441,17 +441,11 @@ vec3 GetWavesNormal(vec3 position, float scale, vec3 viewDir, float frameTime) {
 
 vec3 calculateNormalWater(vec2 uv)
 {
-    // 使用新的波浪法线计算
     vec3 waterPos = vec3(uv.x, 0.0, uv.y);
-    vec3 viewDir = normalize(vec3(0.0, -1.0, 0.0)); // 垂直向下
+    vec3 viewDir = normalize(vec3(0.0, -1.0, 0.0)); 
     
-    // 获取时间（使用现有的 frameTime 变量）
-    float currentTime = frameTime; // 第151行：frameTime = worldUbo.gameTime * 3000.0;
-    
-    // 调用波浪法线计算
+    float currentTime = frameTime;
     vec3 waveNormal = GetWavesNormal(waterPos, 1.0f, viewDir, currentTime);
-    
-    // 调整坐标系（如果需要）
     return waveNormal;
 }
 
@@ -626,28 +620,80 @@ void main() {
     bool isWater = false;
     if (flagValue.g == 255) {
         isWater = true;
-        albedoValue = vec4(0.8, 0.85, 1.0, 1.0);
+        albedoValue = vec4(0.85, 0.90, 0.90, 1.0);
         mat.albedo = albedoValue.rgb;
-        mat.f0 = vec3(0.1); 
+        mat.f0 = vec3(0.02); 
         mat.roughness = 0.001;
         mat.metallic = 0.0;
         mat.transmission = albedoValue.a;
         mat.ior = 1.33;
         mat.emission = 0.0;
+
         if (dot(normal, vec3(0.0, 1.0, 0.0)) > 0.5){
             vec2 WaterOffset = getWaterOffset(worldPos, 1.0f, normal);
             normal = normalize(normal + vec3(WaterOffset.x, 0.0, WaterOffset.y));
             //normal = calculateNormalWater((worldPos.xz + vec2(worldUbo.cameraPos.xz)));
         }
 
+        if (mainRay.index == 0) {
+            ShadowRay savedShadowRay = shadowRay;
+            shadowRay.hitT = INF_DISTANCE;
 
+            shadowRay.bounceIndex = -777;
+
+            vec3 viewDir = normalize(mainRay.direction);
+            vec3 n = normalize(normal);
+
+            // 折射方向：空气 -> 水
+            vec3 refractDir = refract(viewDir, n, 1.0 / 1.33);
+
+            // 极端情况下 refract 失败则退回视线方向
+            if (length(refractDir) < 1e-4) {
+                refractDir = viewDir;
+            } else {
+                refractDir = normalize(refractDir);
+            }
+
+            // 从水面稍微压进水体内部，避免自相交
+            vec3 rayOrigin = worldPos - n * 0.001;
+
+            traceRayEXT(topLevelAS,
+                        gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+                        0xFF,
+                        0, 0, 2,
+                        rayOrigin,
+                        0.001,
+                        refractDir,
+                        32.0,
+                        1);
+
+            float waterPathLength = shadowRay.hitT;
+            shadowRay = savedShadowRay;
+
+            if (waterPathLength >= INF_DISTANCE) {
+                waterPathLength = 32.0;
+            }
+
+           waterPathLength = clamp(waterPathLength, 0.0, 32.0);
+
+            float depth01 = clamp((waterPathLength - 0.2) / 4.0, 0.0, 1.0);
+            depth01 = smoothstep(0.0, 1.0, depth01);
+
+            float effectiveDepth = mix(0.0, 4.0, depth01);
+
+            vec3 absorptionCoeff = vec3(0.10, 0.05, 0.04);
+            vec3 transmittance = exp(-absorptionCoeff * effectiveDepth);
+
+            mat.albedo = albedoValue.rgb * transmittance;
+        }
+        
     }
 
     #define ENABLE_WETNESS_SMOOTH_TRANSITION 0
     // --- 添加湿润效果：仅在下雨时，且当前点露天（无上方遮挡）时应用 ---
     if (skyUBO.rainGradient > 0.0 && mainRay.index == 0) {
-        vec3 upDir = vec3(0.0, 1.0, 0.0);                       // 世界向上方向（假设Y轴向上）
-        vec3 rayOrigin = worldPos + normal * 0.001;              // 偏移避免自遮挡
+        vec3 upDir = vec3(0.0, 1.0, 0.0);                       
+        vec3 rayOrigin = worldPos + normal * 0.001;             
 
         // 保存当前的 shadowRay，以便发射后恢复
         ShadowRay savedShadowRay = shadowRay;
@@ -659,24 +705,24 @@ void main() {
                     WORLD_MASK,                                   // 只检测世界方块
                     0,                                            // sbtRecordOffset
                     0,                                            // sbtRecordStride
-                    2,                                            // missIndex（复用阴影的 miss 索引）
+                    2,                                            // missIndex
                     rayOrigin,
                     0.001,                                        // tMin
                     upDir,
-                    1000.0,                                       // tMax（足够高）
-                    1                                             // payload location（与阴影射线一致）
+                    1000.0,                                       // tMax
+                    1                                             // payload location
                     );
 
-        // 如果 hitT 仍是无穷大，说明未命中任何物体 → 露天
+
         bool isExposed;
         float exposure;
         float wetness;
-        float hitDist = shadowRay.hitT;  // 保存距离，避免恢复后丢失
-        shadowRay = savedShadowRay;       // 立即恢复
-        // 计算暴露因子 exposure (0~1)
+        float hitDist = shadowRay.hitT;  
+        shadowRay = savedShadowRay;      
+        
         if(ENABLE_WETNESS_SMOOTH_TRANSITION == 1){
-            float minDist = 0.5;                 // 完全遮挡的距离
-            float maxDist = 1.5;                 // 完全露天的距离（增大可使过渡更柔和）
+            float minDist = 0.5;                
+            float maxDist = 1.5;               
             exposure = smoothstep(minDist, maxDist, hitDist);
             wetness = skyUBO.rainGradient * exposure;
         }
@@ -684,31 +730,31 @@ void main() {
             isExposed = (hitDist >= INF_DISTANCE);
             wetness = isExposed ? skyUBO.rainGradient : 0.0;
         }
-        // 重新计算几何法线（未受法线贴图影响的真实表面法线）
+      
         vec3 edge1 = v1.pos - v0.pos;
         vec3 edge2 = v2.pos - v0.pos;
         vec3 geoNormalObj = normalize(cross(edge1, edge2));
         mat3 normalMatrix = transpose(mat3(gl_WorldToObject3x4EXT));
         vec3 geometricNormalWorld = normalize(normalMatrix * geoNormalObj);
-        bool isTopFace = geometricNormalWorld.y > 0.9; // 近似判断是否为水平面向上的表面
+        bool isTopFace = geometricNormalWorld.y > 0.9; 
 
         if(!isWater){
 
             if(!isTopFace){
-                wetness *= 0.8; // 非水平面湿润度减少，避免过于夸张
+                wetness *= 0.8; 
             }
             float minRoughness = 0.001;
             float maxRoughness = mat.roughness;
-            mat.roughness = mix(minRoughness, maxRoughness, 1.0 - wetness); // 越湿润越光滑
-            mat.albedo.rgb *= (1.0 - 0.3 * wetness); // 雨水会略微降低反射率，增加暗沉感
+            mat.roughness = mix(minRoughness, maxRoughness, 1.0 - wetness); 
+            mat.albedo.rgb *= (1.0 - 0.3 * wetness); 
             if (mat.metallic == 0.0) {
-                vec3 targetF0 = vec3(0.2);             // 比默认的 0.04 明显增强
-                float factor = wetness * 0.8;            // 控制插值强度，最大影响80%
+                vec3 targetF0 = vec3(0.2);             
+                float factor = wetness * 0.8;           
                 mat.f0 = mix(mat.f0, targetF0, factor);
             }
 
-            // 4. 减弱法线贴图影响：根据湿润强度向几何法线混合
-            // 混合：几何法线占主导的程度随 wetness 增加
+            
+            
             float normalStrength = 1.0 - wetness * 0.95; // 0.8 是最大减弱系数，可调
             normal = normalize(mix(geometricNormalWorld, normal, normalStrength));
 
