@@ -242,7 +242,7 @@ vec3 PQ_OETF_HDR10(vec3 L) {
 
 void main() {
     vec3 hdr = texture(HDR, texCoord).rgb;
-    vec3 expColor = hdr * gExposure.exposure;
+    vec3 expColor = hdr * mix(gExposure.exposure, 1.0, 0.2);
 
     bool hdr10Output = gExposure.hdr10OutputEnabled > 0.5;
 
