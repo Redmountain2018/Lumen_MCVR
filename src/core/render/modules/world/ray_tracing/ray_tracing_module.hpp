@@ -94,6 +94,9 @@ class RayTracingModule : public WorldModule, public SharedObject<RayTracingModul
     std::shared_ptr<vk::Shader> endGatewayClosestHitShader_;
     std::shared_ptr<vk::Shader> endGatewayAnyHitShader_;
 
+    std::shared_ptr<vk::Shader> worldWaterMaskClosestHitShader_;
+    std::shared_ptr<vk::Shader> worldWaterMaskAnyHitShader_;
+
     std::shared_ptr<vk::Shader> worldPostColorToDepthVertShader_;
     std::shared_ptr<vk::Shader> worldPostColorToDepthFragShader_;
     std::shared_ptr<vk::Shader> worldPostVertShader_;

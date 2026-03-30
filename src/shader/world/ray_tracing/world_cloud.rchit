@@ -155,7 +155,7 @@ void main() {
     shadowRay.throughput = vec3(1.0);
     shadowRay.seed = mainRay.seed;
     shadowRay.bounceIndex = mainRay.index;
-
+    shadowRay.queryMode = 0;
     traceRayEXT(topLevelAS, gl_RayFlagsNoneEXT,
                 WORLD_MASK, // masks
                 0,          // sbtRecordOffset

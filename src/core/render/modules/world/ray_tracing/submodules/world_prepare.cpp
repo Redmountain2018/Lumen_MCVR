@@ -167,12 +167,23 @@ void WorldPrepareContext::render() {
     std::vector<uint32_t> blasOffset;
     std::vector<uint32_t> geometryTypes;
     std::vector<uint64_t> vertexBufferAddrs, indexBufferAddrs;
+    std::vector<glm::vec4> waterChunkOrigins;
+    std::vector<glm::ivec4> waterChunkSizes;
+    std::vector<uint32_t> waterOccupancyOffsets;
+    std::vector<uint32_t> solidOccupancyOffsets;
+    std::vector<uint32_t> waterOccupancyData;
+    std::vector<uint32_t> solidOccupancyData;
     std::vector<uint64_t> lastVertexBufferAddrs, lastIndexBufferAddrs;
     std::vector<glm::mat4> lastObjToWorldMats;
 
     tlasBuilder = vk::TLASBuilder::create();
     auto &instanceBuilder = tlasBuilder->beginInstanceBuilder();
     int blasIndex = 0;
+
+    waterTlasBuilder = vk::TLASBuilder::create();
+    auto &waterInstanceBuilder = waterTlasBuilder->beginInstanceBuilder();
+    int waterBlasIndex = 0;
+    uint32_t waterBlasGroupAccu = 0;
 
     // Entity
     {
@@ -317,7 +328,12 @@ void WorldPrepareContext::render() {
                 0, 0, 1, static_cast<float>(static_cast<double>(chunk1->z) - cameraPos.z), //
             };
 
-            instanceBuilder.defineInstance(transform, blasIndex, 0x01, blasGroupAccu, 0, chunk1->blas);
+            uint32_t chunkInstanceOffset = static_cast<uint32_t>(geometryTypes.size());
+            if (chunkInstanceOffset != blasGroupAccu) {
+                throw std::runtime_error("Main chunk SBT offset desync before TLAS instance build");
+            }
+
+            instanceBuilder.defineInstance(transform, blasIndex, 0x01, chunkInstanceOffset, 0, chunk1->blas);
 
             geometryTypes.push_back(World::GeometryTypes::SHADOW);
             geometryTypes.insert(geometryTypes.end(), chunk1->geometryTypes->begin(), chunk1->geometryTypes->end());
@@ -341,9 +357,65 @@ void WorldPrepareContext::render() {
 
             blasOffset.push_back(blasAccu);
             blasAccu += chunk1->geometryCount;
-            blasGroupAccu += chunk1->geometryCount + 1; // shadow
+            blasGroupAccu = static_cast<uint32_t>(geometryTypes.size());
 
             blasIndex++;
+
+            if (chunk1->waterBlas != nullptr) {
+                if (!chunk1->waterOccupancy.empty() && !chunk1->solidOccupancy.empty()) {
+                    waterChunkOrigins.push_back(glm::vec4(
+                        static_cast<float>(static_cast<double>(chunk1->x) - cameraPos.x),
+                        static_cast<float>(static_cast<double>(chunk1->y) - cameraPos.y),
+                        static_cast<float>(static_cast<double>(chunk1->z) - cameraPos.z),
+                        0));
+
+                    waterChunkSizes.push_back(glm::ivec4(
+                        chunk1->occupancySizeX,
+                        chunk1->occupancySizeY,
+                        chunk1->occupancySizeZ,
+                        0));
+
+                    waterOccupancyOffsets.push_back(static_cast<uint32_t>(waterOccupancyData.size()));
+                    solidOccupancyOffsets.push_back(static_cast<uint32_t>(solidOccupancyData.size()));
+
+                    waterOccupancyData.insert(
+                        waterOccupancyData.end(),
+                        chunk1->waterOccupancy.begin(),
+                        chunk1->waterOccupancy.end());
+
+                    solidOccupancyData.insert(
+                        solidOccupancyData.end(),
+                        chunk1->solidOccupancy.begin(),
+                        chunk1->solidOccupancy.end());
+                }
+
+                if (chunk1->waterGeometryCount == 0) {
+                    throw std::runtime_error("Chunk has waterBlas but waterGeometryCount is 0");
+                }
+
+                uint32_t waterInstanceOffset = static_cast<uint32_t>(geometryTypes.size());
+                if (waterInstanceOffset != blasGroupAccu) {
+                    throw std::runtime_error("Water chunk SBT offset desync before TLAS instance build");
+                }
+
+                VkGeometryInstanceFlagsKHR waterFlags =
+                    VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+                waterInstanceBuilder.defineInstance(transform,
+                                                    waterBlasIndex,
+                                                    0x01,
+                                                    waterInstanceOffset,
+                                                    waterFlags,
+                                                    chunk1->waterBlas);
+
+                geometryTypes.push_back(World::GeometryTypes::SHADOW);
+                for (uint32_t j = 0; j < chunk1->waterGeometryCount; j++) {
+                    geometryTypes.push_back(World::GeometryTypes::WORLD_WATER_MASK);
+                }
+
+                blasGroupAccu = static_cast<uint32_t>(geometryTypes.size());
+                waterBlasIndex++;
+            }
+
         }
     }
 
@@ -358,6 +430,16 @@ void WorldPrepareContext::render() {
                ->allocateBuffers(physicalDevice, device, vma)
                ->buildAndSubmit(device, worldCommandBuffer);
 
+    if (!waterInstanceBuilder.instances.empty()) {
+        waterTlas = waterInstanceBuilder.endInstanceBuilder(device, vma)
+                        ->defineBuildProperty(VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR)
+                        ->querySizeInfo(device)
+                        ->allocateBuffers(physicalDevice, device, vma)
+                        ->buildAndSubmit(device, worldCommandBuffer);
+    } else {
+        waterTlas = nullptr;
+    }
+
     worldCommandBuffer->barriersMemory({vk::CommandBuffer::MemoryBarrier{
         .srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
         .srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
@@ -366,6 +448,60 @@ void WorldPrepareContext::render() {
     }});
 
     rayTracingModuleContext.lock()->sbt->setupHitSBT(geometryTypes);
+    
+    if (!waterChunkOrigins.empty()) {
+        waterChunkOriginBuffer = vk::DeviceLocalBuffer::create(
+            vma, device, waterChunkOrigins.size() * sizeof(glm::vec4),
+            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        waterChunkOriginBuffer->uploadToStagingBuffer(waterChunkOrigins.data());
+    }
+
+    if (!waterChunkSizes.empty()) {
+        waterChunkSizeBuffer = vk::DeviceLocalBuffer::create(
+            vma, device, waterChunkSizes.size() * sizeof(glm::ivec4),
+            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        waterChunkSizeBuffer->uploadToStagingBuffer(waterChunkSizes.data());
+    }
+
+    if (!waterOccupancyOffsets.empty()) {
+        waterOccupancyOffsetBuffer = vk::DeviceLocalBuffer::create(
+            vma, device, waterOccupancyOffsets.size() * sizeof(uint32_t),
+            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        waterOccupancyOffsetBuffer->uploadToStagingBuffer(waterOccupancyOffsets.data());
+    }
+
+    if (!solidOccupancyOffsets.empty()) {
+        solidOccupancyOffsetBuffer = vk::DeviceLocalBuffer::create(
+            vma, device, solidOccupancyOffsets.size() * sizeof(uint32_t),
+            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        solidOccupancyOffsetBuffer->uploadToStagingBuffer(solidOccupancyOffsets.data());
+    }
+
+    if (!waterOccupancyData.empty()) {
+        waterOccupancyDataBuffer = vk::DeviceLocalBuffer::create(
+            vma, device, waterOccupancyData.size() * sizeof(uint32_t),
+            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        waterOccupancyDataBuffer->uploadToStagingBuffer(waterOccupancyData.data());
+    }
+
+    if (!solidOccupancyData.empty()) {
+        solidOccupancyDataBuffer = vk::DeviceLocalBuffer::create(
+            vma, device, solidOccupancyData.size() * sizeof(uint32_t),
+            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        solidOccupancyDataBuffer->uploadToStagingBuffer(solidOccupancyData.data());
+    }
 
     uploadBuffer(blasOffset, vertexBufferAddrs, indexBufferAddrs, lastVertexBufferAddrs, lastIndexBufferAddrs,
                  lastObjToWorldMats);

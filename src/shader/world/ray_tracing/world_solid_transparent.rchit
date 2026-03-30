@@ -20,6 +20,32 @@ layout(set = 0, binding = 0) uniform sampler2D textures[];
 
 layout(set = 1, binding = 0) uniform accelerationStructureEXT topLevelAS;
 
+layout(set = 1, binding = 8) uniform accelerationStructureEXT waterTopLevelAS;
+
+layout(set = 1, binding = 14) readonly buffer WaterChunkOriginBuffer {
+    vec4 origins[];
+} waterChunkOrigins;
+
+layout(set = 1, binding = 15) readonly buffer WaterChunkSizeBuffer {
+    ivec4 sizes[];
+} waterChunkSizes;
+
+layout(set = 1, binding = 16) readonly buffer WaterOccupancyOffsetBuffer {
+    uint offsets[];
+} waterOccupancyOffsets;
+
+layout(set = 1, binding = 17) readonly buffer SolidOccupancyOffsetBuffer {
+    uint offsets[];
+} solidOccupancyOffsets;
+
+layout(set = 1, binding = 18) readonly buffer WaterOccupancyDataBuffer {
+    uint values[];
+} waterOccupancyData;
+
+layout(set = 1, binding = 19) readonly buffer SolidOccupancyDataBuffer {
+    uint values[];
+} solidOccupancyData;
+
 layout(set = 1, binding = 1) readonly buffer BLASOffsets {
     uint offsets[];
 }
@@ -509,6 +535,210 @@ bool compareVec(vec4 a, vec4 b) {
     return !any(greaterThan(abs(a - b), vec4(e)));
 }
 
+float traceWorldWaterBoundary(vec3 origin, vec3 dir, float tMin, float tMax, out uvec3 hitID) {
+    ShadowRay savedShadowRay = shadowRay;
+    shadowRay.hitT = INF_DISTANCE;
+    shadowRay.queryMode = 1u;
+    shadowRay.instanceIndex = 0u;
+    shadowRay.geometryIndex = 0u;
+    shadowRay.primitiveIndex = 0u;
+    traceRayEXT(waterTopLevelAS,
+                gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+                0x01,
+                0, 0, 2,
+                origin,
+                tMin,
+                dir,
+                tMax,
+                1);
+
+    float hitT = shadowRay.hitT;
+    hitID = uvec3(shadowRay.instanceIndex, shadowRay.geometryIndex, shadowRay.primitiveIndex);
+    shadowRay = savedShadowRay;
+    return hitT;
+}
+
+float sampleWaterCaustic(vec3 receiverWorldPos, vec3 lightDir, out float waterPathLength) {
+    uvec3 waterHitID;
+    vec3 traceOrigin = receiverWorldPos + lightDir * 0.01;
+    waterPathLength = traceWorldWaterBoundary(traceOrigin, lightDir, 0.001, 500.0, waterHitID);
+
+    if (waterPathLength >= INF_DISTANCE) {
+        waterPathLength = 0.0;
+        return 1.0;
+    }
+
+    vec3 waterSurfacePos = traceOrigin + lightDir * max(waterPathLength, 0.0);
+    vec3 surfaceNormal = vec3(0.0, 1.0, 0.0);
+    const float sampleStep = 0.22;
+
+    vec2 offsetCenter = getWaterOffset(waterSurfacePos, 1.0, surfaceNormal);
+    vec2 offsetXp = getWaterOffset(waterSurfacePos + vec3(sampleStep, 0.0, 0.0), 1.0, surfaceNormal);
+    vec2 offsetXm = getWaterOffset(waterSurfacePos - vec3(sampleStep, 0.0, 0.0), 1.0, surfaceNormal);
+    vec2 offsetZp = getWaterOffset(waterSurfacePos + vec3(0.0, 0.0, sampleStep), 1.0, surfaceNormal);
+    vec2 offsetZm = getWaterOffset(waterSurfacePos - vec3(0.0, 0.0, sampleStep), 1.0, surfaceNormal);
+
+    vec2 gradX = (offsetXp - offsetXm) / (2.0 * sampleStep);
+    vec2 gradZ = (offsetZp - offsetZm) / (2.0 * sampleStep);
+    float signedConvergence = -(gradX.x + gradZ.y);
+
+    vec3 waveNormal = normalize(vec3(offsetCenter.x * 10.0, 1.0, offsetCenter.y * 8.0));
+    vec3 refractedLight = refract(-lightDir, waveNormal, 1.0 / 1.333);
+    if (length(refractedLight) < 1e-4) {
+        refractedLight = -lightDir;
+    } else {
+        refractedLight = normalize(refractedLight);
+    }
+
+    float directionalFocus = pow(max(dot(refractedLight, vec3(0.0, -1.0, 0.0)), 0.0), 2.5);
+    float slopeStrength = clamp(length(offsetCenter) * 24.0, 0.0, 1.0);
+    float depthFade = exp(-waterPathLength * 0.12);
+    float lowSunBoost = mix(2.4, 1.0, smoothstep(0.08, 0.55, max(lightDir.y, 0.0)));
+    float signedCaustic = signedConvergence * (0.35 + 0.65 * slopeStrength) * (0.25 + 0.75 * directionalFocus);
+    signedCaustic *= depthFade * 8.0 * lowSunBoost;
+
+    float positiveCaustic = clamp(signedCaustic, 0.0, 1.0);
+    float negativeCaustic = clamp(-signedCaustic, 0.0, 0.35);
+    positiveCaustic = pow(positiveCaustic, 1.8);
+    signedCaustic = positiveCaustic - negativeCaustic;
+    signedCaustic = clamp(signedCaustic, -0.35, 1.0);
+
+    return 1.0 + signedCaustic;
+}
+
+float traceWorldOpaqueBlocker(vec3 origin, vec3 dir, float tMin, float tMax) {
+    ShadowRay savedShadowRay = shadowRay;
+    shadowRay.hitT = INF_DISTANCE;
+    shadowRay.throughput = vec3(1.0);
+    shadowRay.radiance = vec3(0.0);
+    shadowRay.queryMode = 1u;
+
+    traceRayEXT(topLevelAS,
+                gl_RayFlagsTerminateOnFirstHitEXT,
+                WORLD_MASK,
+                0, 0, 2,
+                origin,
+                tMin,
+                dir,
+                tMax,
+                1);
+
+    float hitT = shadowRay.hitT;
+    shadowRay = savedShadowRay;
+    return hitT;
+}
+
+int findWaterChunk(vec3 worldPos) {
+    for (int i = 0; i < waterChunkOrigins.origins.length(); ++i) {
+        vec3 origin = waterChunkOrigins.origins[i].xyz;
+        vec3 size = vec3(waterChunkSizes.sizes[i].xyz);
+        vec3 rel = worldPos - origin;
+        if (all(greaterThanEqual(rel, vec3(0.0))) && all(lessThan(rel, size))) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+int occupancyIndex(ivec3 localPos, ivec3 size) {
+    return localPos.y * size.z * size.x + localPos.z * size.x + localPos.x;
+}
+
+bool sampleWaterOccupancy(int chunkIndex, ivec3 localPos) {
+    if (chunkIndex < 0) return false;
+    ivec3 size = waterChunkSizes.sizes[chunkIndex].xyz;
+    if (any(lessThan(localPos, ivec3(0))) || any(greaterThanEqual(localPos, size))) return false;
+    uint base = waterOccupancyOffsets.offsets[chunkIndex];
+    uint idx = uint(occupancyIndex(localPos, size));
+    return waterOccupancyData.values[base + idx] != 0u;
+}
+
+bool sampleSolidOccupancy(int chunkIndex, ivec3 localPos) {
+    if (chunkIndex < 0) return false;
+    ivec3 size = waterChunkSizes.sizes[chunkIndex].xyz;
+    if (any(lessThan(localPos, ivec3(0))) || any(greaterThanEqual(localPos, size))) return false;
+    uint base = solidOccupancyOffsets.offsets[chunkIndex];
+    uint idx = uint(occupancyIndex(localPos, size));
+    return solidOccupancyData.values[base + idx] != 0u;
+}
+
+float traceWaterOccupancyPath(vec3 origin, vec3 dir, float tMin, float tMax) {
+    vec3 rayOrigin = origin + dir * tMin;
+    vec3 rayDir = normalize(dir);
+    float t = 0.0;
+    const float stepSize = 0.5;
+
+    bool enteredWater = false;
+
+    while (t < tMax) {
+        vec3 p = rayOrigin + rayDir * t;
+        int chunkIndex = findWaterChunk(p);
+        if (chunkIndex < 0) {
+            if (enteredWater) {
+               return t;
+            }
+            t += stepSize;
+            continue;
+        }
+
+        vec3 originCell = waterChunkOrigins.origins[chunkIndex].xyz;
+        ivec3 localPos = ivec3(floor(p - originCell));
+
+        if (sampleSolidOccupancy(chunkIndex, localPos)) {
+            return t;
+        }
+
+        if (sampleWaterOccupancy(chunkIndex, localPos)) {
+            enteredWater = true;
+            t += stepSize;
+            continue;
+        }
+
+        if (enteredWater) {
+            return t;
+        }
+
+        t += stepSize;
+    }
+
+    return enteredWater ? tMax : 0.0;
+}
+
+vec3 encodeWaterThicknessDebugColor(float pathLength) {
+    if (pathLength <= 0.0) {
+        return vec3(1.0, 0.0, 0.0);
+    }
+
+    float thicknessBand = 1.0 - clamp(pathLength / 32.0, 0.0, 1.0);
+    float stripe = 0.55 + 0.45 * step(0.5, fract(pathLength * 0.25));
+    return vec3(0.0, 1.0, 0.35) * (0.35 + 0.65 * thicknessBand) * stripe;
+}
+
+bool isContinuousWaterPath(vec3 origin, vec3 dir, float tEnd) {
+    const float stepSize = 0.2;
+    float t = 0.0;
+    vec3 rayDir = normalize(dir);
+
+    while (t < tEnd) {
+        vec3 p = origin + rayDir * t;
+        int chunkIndex = findWaterChunk(p);
+        if (chunkIndex < 0) {
+            return false;
+        }
+
+        vec3 originCell = waterChunkOrigins.origins[chunkIndex].xyz;
+        ivec3 localPos = ivec3(floor(p - originCell));
+        if (!sampleWaterOccupancy(chunkIndex, localPos)) {
+            return false;
+        }
+
+        t += stepSize;
+    }
+
+    return true;
+}
+
+
 void main() {
     vec3 viewDir = -mainRay.direction;
 
@@ -622,11 +852,11 @@ void main() {
         isWater = true;
         albedoValue = vec4(0.85, 0.90, 0.90, 1.0);
         mat.albedo = albedoValue.rgb;
-        mat.f0 = vec3(0.02); 
+        mat.f0 = vec3(0.06); 
         mat.roughness = 0.001;
         mat.metallic = 0.0;
         mat.transmission = albedoValue.a;
-        mat.ior = 1.33;
+        mat.ior = 1.5;
         mat.emission = 0.0;
 
         if (dot(normal, vec3(0.0, 1.0, 0.0)) > 0.5){
@@ -636,73 +866,69 @@ void main() {
         }
 
         if (mainRay.index == 0) {
-            ShadowRay savedShadowRay = shadowRay;
-            shadowRay.hitT = INF_DISTANCE;
-
-            shadowRay.bounceIndex = -777;
-
             vec3 viewDir = normalize(mainRay.direction);
             vec3 n = normalize(normal);
 
-            // 折射方向：空气 -> 水
             vec3 refractDir = refract(viewDir, n, 1.0 / 1.33);
-
-            // 极端情况下 refract 失败则退回视线方向
             if (length(refractDir) < 1e-4) {
                 refractDir = viewDir;
             } else {
                 refractDir = normalize(refractDir);
             }
 
-            // 从水面稍微压进水体内部，避免自相交
-            vec3 rayOrigin = worldPos - n * 0.001;
+            float waterPathLength = 16.0;
 
+            PrimaryRay savedMainRay = mainRay;
+            mainRay.index = 1u;
+            mainRay.hitT = 0.0;
+            mainRay.directLightRadiance = vec3(0.0);
+            mainRay.directLightHitT = 0.0;
+            mainRay.stop = 0u;
+            mainRay.cont = 0u;
+
+            uint rayMask = WORLD_MASK | PLAYER_MASK | FISHING_BOBBER_MASK | WEATHER_MASK | PARTICLE_MASK | CLOUD_MASK;
+            uint rayFlags = gl_RayFlagsCullBackFacingTrianglesEXT | gl_RayFlagsForceOpacityMicromap2StateEXT;
             traceRayEXT(topLevelAS,
-                        gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
-                        0xFF,
-                        0, 0, 2,
-                        rayOrigin,
+                        rayFlags,
+                        rayMask,
+                        1,
+                        1,
+                        0,
+                        worldPos + refractDir * 0.01,
                         0.001,
                         refractDir,
-                        32.0,
-                        1);
+                        500.0,
+                        0);
 
-            float waterPathLength = shadowRay.hitT;
-            shadowRay = savedShadowRay;
+            waterPathLength = (mainRay.hitT < INF_DISTANCE) ? max(mainRay.hitT, 0.0) : 0.0;
+            mainRay = savedMainRay;
 
-            if (waterPathLength >= INF_DISTANCE) {
-                waterPathLength = 32.0;
-            }
+            vec3 absorptionCoeff = vec3(0.65, 0.18, 0.06);
+            vec3 scatteringCoeff = vec3(0.010, 0.018, 0.025);
+            vec3 sigmaT = absorptionCoeff + scatteringCoeff;
 
-           waterPathLength = clamp(waterPathLength, 0.0, 32.0);
+            vec3 transmittance = exp(-sigmaT * waterPathLength);
+            vec3 waterFogColor = vec3(0.02, 0.10, 0.16);
 
-            float depth01 = clamp((waterPathLength - 0.2) / 4.0, 0.0, 1.0);
-            depth01 = smoothstep(0.0, 1.0, depth01);
+            mat.albedo = albedoValue.rgb * transmittance
+                    + waterFogColor * (vec3(1.0) - transmittance);
 
-            float effectiveDepth = mix(0.0, 4.0, depth01);
-
-            vec3 absorptionCoeff = vec3(0.10, 0.05, 0.04);
-            vec3 transmittance = exp(-absorptionCoeff * effectiveDepth);
-
-            mat.albedo = albedoValue.rgb * transmittance;
         }
         
     }
 
     #define ENABLE_WETNESS_SMOOTH_TRANSITION 0
-    // --- 添加湿润效果：仅在下雨时，且当前点露天（无上方遮挡）时应用 ---
     if (skyUBO.rainGradient > 0.0 && mainRay.index == 0) {
         vec3 upDir = vec3(0.0, 1.0, 0.0);                       
         vec3 rayOrigin = worldPos + normal * 0.001;             
 
-        // 保存当前的 shadowRay，以便发射后恢复
         ShadowRay savedShadowRay = shadowRay;
-        // 初始化 hitT 为无穷大（表示未命中）
         shadowRay.hitT = INF_DISTANCE;
+        shadowRay.queryMode = 0;
 
         traceRayEXT(topLevelAS,
-                    gl_RayFlagsTerminateOnFirstHitEXT,        // 找到第一个命中即停止
-                    WORLD_MASK,                                   // 只检测世界方块
+                    gl_RayFlagsTerminateOnFirstHitEXT,       
+                    WORLD_MASK,                                  
                     0,                                            // sbtRecordOffset
                     0,                                            // sbtRecordStride
                     2,                                            // missIndex
@@ -755,7 +981,7 @@ void main() {
 
             
             
-            float normalStrength = 1.0 - wetness * 0.95; // 0.8 是最大减弱系数，可调
+            float normalStrength = 1.0 - wetness * 0.95; 
             normal = normalize(mix(geometricNormalWorld, normal, normalStrength));
 
 
@@ -792,10 +1018,12 @@ void main() {
 
         shadowRay.radiance = vec3(0.0);
         shadowRay.throughput = vec3(1.0);
+        shadowRay.hitWater = 0u;
         shadowRay.seed = mainRay.seed;
         shadowRay.hitT = INF_DISTANCE;
         shadowRay.insideBoat = mainRay.insideBoat;
         shadowRay.bounceIndex = mainRay.index;
+        shadowRay.queryMode = 0;
 
         uint shadowMask = WORLD_MASK;
         if (mainRay.isHand == 0) {
@@ -811,6 +1039,55 @@ void main() {
 
         // Add direct lighting contribution
         vec3 lightContribution = shadowRay.radiance;
+        bool shadowRayHitWater = (shadowRay.hitWater != 0u);
+        float waterShadowPathLength = 0.0;
+
+        if(mainRay.index == 0 && shadowRayHitWater){   
+
+            PrimaryRay savedMainRay = mainRay;
+            mainRay.index = 1u;
+            mainRay.hitT = 0.0;
+            mainRay.directLightRadiance = vec3(0.0);
+            mainRay.directLightHitT = 0.0;
+            mainRay.stop = 0u;
+            mainRay.cont = 0u;
+            uint rayMask = WORLD_MASK | PLAYER_MASK | FISHING_BOBBER_MASK | WEATHER_MASK | PARTICLE_MASK | CLOUD_MASK;
+            uint rayFlags = gl_RayFlagsCullBackFacingTrianglesEXT | gl_RayFlagsForceOpacityMicromap2StateEXT;
+            traceRayEXT(topLevelAS,
+                        rayFlags,
+                        rayMask,
+                        1,
+                        1,
+                        0,
+                        shadowRayOrigin + sampledLightDir * 0.01,
+                        0.001,
+                        sampledLightDir,
+                        500.0,
+                        0);
+
+
+            waterShadowPathLength = (mainRay.hitT < INF_DISTANCE) ? max(mainRay.hitT, 0.0) : 0.0;
+            mainRay = savedMainRay;
+
+            vec3 absorptionCoeff = vec3(0.65, 0.18, 0.06);
+            vec3 scatteringCoeff = vec3(0.010, 0.018, 0.025);
+            vec3 sigmaT = absorptionCoeff + scatteringCoeff;
+            vec3 waterShadowTransmittance = exp(-sigmaT * waterShadowPathLength);
+            //shadowRay.waterShadowTransmittance = waterShadowTransmittance;
+            mainRay.waterShadowTransmittance = waterShadowTransmittance;
+            lightContribution *= waterShadowTransmittance;
+            //mainRay.throughput *= waterShadowTransmittance;
+        }
+
+        if (mainRay.index != 0u && shadowRayHitWater) {
+            lightContribution *= mainRay.waterShadowTransmittance;
+        }
+
+        if (shadowRayHitWater) {
+            float waterCausticPathLength = 0.0;
+            float waterCaustic = sampleWaterCaustic(worldPos, sampledLightDir, waterCausticPathLength);
+            lightContribution *= waterCaustic;
+        }
 
         // Apply cloud shadowing (procedural volumetric slab).
         // This is evaluated at the shading point so it works for primary and reflected paths.

@@ -39,12 +39,21 @@ struct WorldPrepareContext : public SharedObject<WorldPrepareContext> {
     std::shared_ptr<vk::TLAS> tlas;
     std::shared_ptr<vk::TLASBuilder> tlasBuilder;
 
+    std::shared_ptr<vk::TLAS> waterTlas;
+    std::shared_ptr<vk::TLASBuilder> waterTlasBuilder;
+
     std::shared_ptr<vk::DeviceLocalBuffer> blasOffsetsBuffer;
     std::shared_ptr<vk::DeviceLocalBuffer> vertexBufferAddr;
     std::shared_ptr<vk::DeviceLocalBuffer> indexBufferAddr;
     std::shared_ptr<vk::DeviceLocalBuffer> lastVertexBufferAddr;
     std::shared_ptr<vk::DeviceLocalBuffer> lastIndexBufferAddr;
     std::shared_ptr<vk::DeviceLocalBuffer> lastObjToWorldMat;
+    std::shared_ptr<vk::DeviceLocalBuffer> waterChunkOriginBuffer;
+    std::shared_ptr<vk::DeviceLocalBuffer> waterChunkSizeBuffer;
+    std::shared_ptr<vk::DeviceLocalBuffer> waterOccupancyOffsetBuffer;
+    std::shared_ptr<vk::DeviceLocalBuffer> solidOccupancyOffsetBuffer;
+    std::shared_ptr<vk::DeviceLocalBuffer> waterOccupancyDataBuffer;
+    std::shared_ptr<vk::DeviceLocalBuffer> solidOccupancyDataBuffer;
 
     WorldPrepareContext(std::shared_ptr<FrameworkContext> frameworkContext, std::shared_ptr<WorldPrepare> worldprepare);
 

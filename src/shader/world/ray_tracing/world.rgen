@@ -104,6 +104,7 @@ layout(location = 0) rayPayloadEXT PrimaryRay mainRay;
 
 
 #define DISABLE_RENDER_DISTANCE_FOG 0
+#define DEBUG_WATER_DEPTH_PROXY 0
 
 vec3 applyFog(vec3 radiance, float t, float fogStart, float dBase, float dFog, vec3 fogRadiance) {
     float opticalDepth = 0.0;
@@ -153,12 +154,18 @@ void main() {
     LabPBRMat firstHitMat;
     bool hasSecondHit = false;
     float distFirstToSecond = 0.0;
+    float firstHitDistance = INF_DISTANCE;
+    bool firstHitIsWater = false;
     bool isFirstHitNoisy = false;
     bool isFirstHitDiffuse = false;
     vec3 firstHitEmission = vec3(0.0);
     vec3 firstHitDirectRadiance = vec3(0.0);
     vec3 firstHitIndirectRadiance = vec3(0.0);
     vec3 firstHitBaseEmission = vec3(0.0);
+    vec3 primaryCloudRadiance = vec3(0.0);
+    vec3 primaryCloudTransmittance = vec3(1.0);
+    bool handHitPrimary = false;
+    vec3 waterShadowCache = vec3(1.0);
 
     mainRay.seed = worldUBO.seed;
     for (int isHand = 0; isHand <= 1; isHand++) {
@@ -189,6 +196,10 @@ void main() {
             mainRay.hitT = 0;
             mainRay.directLightRadiance = vec3(0.0);
             mainRay.directLightHitT = 0.0;
+            if (psrDepth == 0) {
+                waterShadowCache = vec3(1.0);
+            }
+            mainRay.waterShadowTransmittance = waterShadowCache;
             mainRay.stop = 0;
             mainRay.cont = 0;
 
@@ -247,34 +258,58 @@ void main() {
                         0                  // mainRay
             );
 
-            // Fancy clouds (volumetric): integrate only on the primary camera ray.
-            // (Fast clouds are geometry-based; OFF disables both.)
+            if (mainRay.index == 0u) {
+                waterShadowCache = mainRay.waterShadowTransmittance;
+            } else {
+                mainRay.waterShadowTransmittance = waterShadowCache;
+            }
+
+            // Integrate volumetric clouds on the primary camera ray whenever the visible
+            // ray segment actually crosses the cloud slab. This keeps clouds visible when
+            // viewed from below, from inside, and from above.
             if (isHand == 0 && psrDepth == 0 && skyUBO.cloudTile.x >= 0) {
-                // Only pay cloud integration for sky / far-horizon rays.
-                bool farOrSky = (mainRay.hitT == INF_DISTANCE) || (mainRay.hitT > 256.0);
-                bool looksUp = traceDir.y > 0.02;
-                if (farOrSky && looksUp) {
-                    float tMax = len;
-                    if (mainRay.hitT != INF_DISTANCE) {
-                        tMax = min(mainRay.hitT, len);
+                float tMax = len;
+                if (mainRay.hitT != INF_DISTANCE) {
+                    tMax = min(mainRay.hitT, len);
+                }
+
+                float thickness = skyUBO.envCloud.y;
+                if (!isnan(skyUBO.envCloud.x) && thickness > 0.0 && tMax > 0.0) {
+                    float baseYRel = skyUBO.envCloud.x - float(worldUBO.cameraPos.y);
+                    float topYRel = baseYRel + thickness;
+                    float slabT0, slabT1;
+                    bool intersectsCloudSlab =
+                        cloudIntersectSlabY(traceOrigin, traceDir, baseYRel, topYRel, slabT0, slabT1);
+
+                    if (intersectsCloudSlab && min(tMax, slabT1) > max(0.0, slabT0)) {
+                        CloudSegmentResult seg = integrateCloudSegment(traceOrigin, traceDir, 0.0, tMax, worldUBO,
+                                                                      skyUBO,
+                                                                      skyFull, mainRay.seed,
+                                                                      8, 4);
+
+                        primaryCloudRadiance += seg.L * throughputBeforeTrace;
+                        primaryCloudTransmittance *= seg.T;
+                        vec3 dL = mainRay.radiance - radianceBeforeTrace;
+                        mainRay.radiance = radianceBeforeTrace + dL * seg.T;
+                        // Preserve the hit shader's throughput update; apply medium transmittance to it.
+                        mainRay.throughput *= seg.T;
                     }
-
-                    CloudSegmentResult seg = integrateCloudSegment(traceOrigin, traceDir, 0.0, tMax, worldUBO, skyUBO,
-                                                                  skyFull, mainRay.seed,
-                                                                  8, 4);
-
-                    vec3 dL = mainRay.radiance - radianceBeforeTrace;
-                    mainRay.radiance = radianceBeforeTrace + seg.L * throughputBeforeTrace + dL * seg.T;
-                    // Preserve the hit shader's throughput update; apply medium transmittance to it.
-                    mainRay.throughput *= seg.T;
                 }
             }
 
             if (!surfaceDepthSampled) {
                 if (isHand == 0) {
                     surfaceDepth = mainRay.hitT;
+                    firstHitDistance = mainRay.hitT;
+                    firstHitIsWater = (mainRay.hitT != INF_DISTANCE) && (mainRay.flagValue.g == 255);
                 } else {
-                    if (mainRay.hitT != INF_DISTANCE) surfaceDepth = mainRay.hitT;
+                    if (mainRay.hitT != INF_DISTANCE) {
+                        if (psrDepth == 0) {
+                            handHitPrimary = true;
+                        }
+                        surfaceDepth = mainRay.hitT;
+                        firstHitDistance = mainRay.hitT;
+                    }
                 }
                 surfaceDepthSampled = true;
             }
@@ -476,6 +511,7 @@ void main() {
             if (mainRay.stop > 0) break;
 
             mainRay.index = b;
+            mainRay.waterShadowTransmittance = waterShadowCache;
 
             uint mask;
             uint len;
@@ -500,11 +536,20 @@ void main() {
             if (b >= 1) {
                 bounceFlags |= gl_RayFlagsForceOpacityMicromap2StateEXT;
             }
-            traceRayEXT(topLevelAS, bounceFlags, mask,
-                        1,                          // sbtRecordOffset
-                        1,                          // sbtRecordStride
-                        0,                          // missIndex
-                        mainRay.origin, 0.001, mainRay.direction, len, 0);
+             traceRayEXT(topLevelAS, bounceFlags, mask,
+                         1,                          // sbtRecordOffset
+                         1,                          // sbtRecordStride
+                         0,                          // missIndex
+                         mainRay.origin, 0.001, mainRay.direction, len, 0);
+
+            if (mainRay.index == 0u) {
+                waterShadowCache = mainRay.waterShadowTransmittance;
+            } else {
+                mainRay.waterShadowTransmittance = waterShadowCache;
+            }
+
+            // Apply the latest cached water tint after refreshing it from the current hit.
+            mainRay.throughput *= waterShadowCache;
 
             if (b == psrDepth) {
                 distFirstToSecond = mainRay.hitT;
@@ -535,11 +580,23 @@ void main() {
     if (isnan(mainRay.radiance.g) || isinf(mainRay.radiance.g)) { mainRay.radiance = vec3(0.0, 0.0, 0.0); }
     if (isnan(mainRay.radiance.b) || isinf(mainRay.radiance.b)) { mainRay.radiance = vec3(0.0, 0.0, 0.0); }
 
+#if DEBUG_WATER_DEPTH_PROXY
+    if (firstHitIsWater && firstHitDistance < INF_DISTANCE && hasSecondHit) {
+        float depthDiff = (distFirstToSecond < INF_DISTANCE) ? max(distFirstToSecond, 0.0) : 0.0;
+        vec3 debugDepthColor = vec3(
+            clamp(depthDiff / 64.0, 0.0, 1.0)
+        );
+        imageStore(outputImage, ivec2(pixel), vec4(debugDepthColor, 1.0));
+        return;
+    }
+    #endif
+
     float densityAir = 0.0000;
     float densityFog = 2.0 / max(worldUBO.fogEnd - worldUBO.fogStart, 1e-3);
     if (skyUBO.cameraSubmersionType == 1) { // underwater
         vec3 waterColor = vec3(0.8, 0.85, 1.0);
-        float waterFogStrength = 0.1;//max(0.0, skyUBO.envWaterTintFog.a);
+        float waterFogStrength = 1.5;//max(0.0, skyUBO.envWaterTintFog.a);
+        waterColor *= waterShadowCache;
         mainRay.radiance *= waterColor;
 
         if (surfaceDepth == INF_DISTANCE) surfaceDepth = 0;
@@ -547,8 +604,9 @@ void main() {
             applyFog(mainRay.radiance, surfaceDepth, worldUBO.fogStart, densityAir, densityFog * waterFogStrength, waterColor * 0.01);
     } else if (DISABLE_RENDER_DISTANCE_FOG == 0) {
         if (worldUBO.skyType == 0) { // None
+            vec3 fogRadiance = worldUBO.fogColor.rgb * primaryCloudTransmittance;
             mainRay.radiance = applyFog(mainRay.radiance, surfaceDepth, worldUBO.fogStart, densityAir, densityFog,
-                                        worldUBO.fogColor.rgb);
+                                        fogRadiance);
         } else if (worldUBO.skyType == 1) { // Normal
             if (!psrHitSky) {
                 vec3 eyeToPSRHitPosition = psrHitPosition - eyePos;
@@ -558,17 +616,22 @@ void main() {
                 vec3 sunDir = normalize(skyUBO.sunDirection);
                 vec3 rayDir = orgDirection;
                 float progress = clamp(skyUBO.rainGradient * skyUBO.envSky.y, 0.0, 1.0);
-                vec3 rainyRadiance = mix(vec3(0.2, 0.25, 0.3), vec3(0.5), smoothstep(-0.3, 0.3, sunDir.y));
+                vec3 rainyRadiance = mix(vec3(0.0), vec3(0.3), smoothstep(-0.3, 0.3, sunDir.y));
                 vec3 sunnyRadiance = texture(skyFull, rayDir).rgb * skyUBO.envSky.x;
-                vec3 fogRadiance = mix(sunnyRadiance, rainyRadiance, progress);
+                vec3 fogRadiance = mix(sunnyRadiance, rainyRadiance, progress) * primaryCloudTransmittance;
 
                 mainRay.radiance =
                     applyFog(mainRay.radiance, len, worldUBO.fogStart, densityAir, densityFog, fogRadiance);
             }
         } else if (worldUBO.skyType == 2) { // End
+            vec3 fogRadiance = worldUBO.fogColor.rgb * primaryCloudTransmittance;
             mainRay.radiance = applyFog(mainRay.radiance, surfaceDepth, worldUBO.fogStart, densityAir, densityFog,
-                                        worldUBO.fogColor.rgb);
+                                        fogRadiance);
         }
+    }
+
+    if (!handHitPrimary) {
+        mainRay.radiance += primaryCloudRadiance;
     }
 
     if (!psrHitSky && isFirstHitNoisy) {

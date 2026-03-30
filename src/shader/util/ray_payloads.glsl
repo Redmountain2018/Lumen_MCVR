@@ -66,6 +66,7 @@ struct PrimaryRay {
     T_UINT lobeType;
     T_VEC3 directLightRadiance;
     T_FLOAT directLightHitT;
+    T_VEC3 waterShadowTransmittance;
     T_UINT stop;
     T_UINT cont;
 };
@@ -77,6 +78,12 @@ struct ShadowRay {
     T_FLOAT hitT;
     T_UINT insideBoat;
     T_UINT bounceIndex;
+    T_UINT queryMode;
+    T_UINT instanceIndex;
+    T_UINT geometryIndex;
+    T_UINT primitiveIndex;
+    T_UINT hitWater;
+    T_VEC3 waterShadowTransmittance;
 };
 
 #endif

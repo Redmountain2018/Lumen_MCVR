@@ -16,6 +16,18 @@ bool cloudTileEnabled(SkyUBO skyUBO) {
 
 // Vanilla cloud mapping constants.
 const float CLOUD_CELL_SIZE = 12.0;
+const int CLOUD_TILE_HALF_EXTENT = 48;
+const int CLOUD_TILE_SIZE = CLOUD_TILE_HALF_EXTENT * 2 + 1;
+const float CLOUD_FADE_MARGIN_CELLS = 8.0;
+
+float cloudDistanceFade(vec3 pCam, SkyUBO skyUBO) {
+    float xLocal = pCam.x + skyUBO.cloudWrap.x;
+    float zLocal = pCam.z + skyUBO.cloudWrap.y;
+    vec2 cellPos = vec2(xLocal, zLocal) / CLOUD_CELL_SIZE;
+    float edge = max(abs(cellPos.x), abs(cellPos.y));
+    float fadeStart = float(CLOUD_TILE_HALF_EXTENT) - CLOUD_FADE_MARGIN_CELLS;
+    return 1.0 - smoothstep(fadeStart, float(CLOUD_TILE_HALF_EXTENT) + 0.5, edge);
+}
 const float CLOUD_LAYER_THICKNESS = 4.0;
 const float CLOUD_SCROLL_SPEED_X = 0.030000001;
 const float CLOUD_Z_BIAS = 3.96;
@@ -42,13 +54,13 @@ vec4 cloudFetchMaskRGBA(SkyUBO skyUBO, ivec2 tileCoord) {
 }
 
 float cloudOcc01(SkyUBO skyUBO, ivec2 tc) {
-    if (tc.x < 0 || tc.x > 64 || tc.y < 0 || tc.y > 64) return 0.0;
+    if (tc.x < 0 || tc.x >= CLOUD_TILE_SIZE || tc.y < 0 || tc.y >= CLOUD_TILE_SIZE) return 0.0;
     return cloudFetchMaskRGBA(skyUBO, tc).r > 0.5 ? 1.0 : 0.0;
 }
 
 // Borders from mask texture: G=N, B=E, A=S. West is taken from left neighbor's east.
 void cloudBorders(SkyUBO skyUBO, ivec2 tc, out float bN, out float bE, out float bS, out float bW) {
-    if (tc.x < 0 || tc.x > 64 || tc.y < 0 || tc.y > 64) {
+    if (tc.x < 0 || tc.x >= CLOUD_TILE_SIZE || tc.y < 0 || tc.y >= CLOUD_TILE_SIZE) {
         bN = bE = bS = bW = 0.0;
         return;
     }
@@ -84,7 +96,7 @@ float cloudEdgeDistance01(vec2 inCell, float bN, float bE, float bS, float bW) {
     return d;
 }
 
-// Map camera-relative position into the 65x65 Fancy tile mask.
+// Map camera-relative position into the extended Fancy tile mask.
 // skyUBO.cloudWrap.xy stores vanilla intra-cell offsets (l,m) in blocks ([0,12)).
 bool cloudSampleTileMask(vec3 pCam, SkyUBO skyUBO, out vec2 inCell, out ivec2 tileCoord) {
     if (!cloudTileEnabled(skyUBO)) return false;
@@ -98,10 +110,10 @@ bool cloudSampleTileMask(vec3 pCam, SkyUBO skyUBO, out vec2 inCell, out ivec2 ti
     int cellX = int(floor(fx));
     int cellZ = int(floor(fz));
 
-    // Match vanilla draw distance (+/- 32 cells around center, inclusive).
-    if (abs(cellX) > 32 || abs(cellZ) > 32) return false;
+    // Extended RT cloud distance; the shader fades clouds before this boundary.
+    if (abs(cellX) > CLOUD_TILE_HALF_EXTENT || abs(cellZ) > CLOUD_TILE_HALF_EXTENT) return false;
 
-    tileCoord = ivec2(cellX + 32, cellZ + 32);
+    tileCoord = ivec2(cellX + CLOUD_TILE_HALF_EXTENT, cellZ + CLOUD_TILE_HALF_EXTENT);
     inCell = fract(vec2(fx, fz));
     return true;
 }
@@ -340,11 +352,10 @@ float cloudDensityAtVisual(vec3 pCam, WorldUBO worldUBO, SkyUBO skyUBO) {
 vec3 cloudMainLightRadiance(SkyUBO skyUBO, out vec3 toLight) {
     vec3 sunDir = normalize(skyUBO.sunDirection);
     vec3 radiance;
-
     // Use moon when sun is below horizon.
     if (sunDir.y > 0.0) {
         toLight = sunDir;
-        radiance = (skyUBO.sunRadiance * skyUBO.envCelestial.z * skyUBO.sunColor);
+        radiance = (skyUBO.sunRadiance * skyUBO.envCelestial.z * mix(skyUBO.sunColor, vec3(0.3), skyUBO.rainGradient));
     } else {
         toLight = normalize(skyUBO.moonDirection);
         radiance = (skyUBO.moonRadiance * skyUBO.envCelestial.w) * 0.05;
@@ -381,7 +392,7 @@ float cloudTransmittance(vec3 ro, vec3 rd, float tMin, float tMax, WorldUBO worl
 
     int cellX = int(floor(x / CLOUD_CELL_SIZE));
     int cellZ = int(floor(z / CLOUD_CELL_SIZE));
-    if (abs(cellX) > 32 || abs(cellZ) > 32) return 1.0;
+    if (abs(cellX) > CLOUD_TILE_HALF_EXTENT || abs(cellZ) > CLOUD_TILE_HALF_EXTENT) return 1.0;
 
     int stepX = (rd.x > 0.0) ? 1 : -1;
     int stepZ = (rd.z > 0.0) ? 1 : -1;
@@ -430,7 +441,7 @@ float cloudTransmittance(vec3 ro, vec3 rd, float tMin, float tMax, WorldUBO worl
             cellZ += stepZ;
         }
 
-        if (abs(cellX) > 32 || abs(cellZ) > 32) break;
+        if (abs(cellX) > CLOUD_TILE_HALF_EXTENT || abs(cellZ) > CLOUD_TILE_HALF_EXTENT) break;
     }
 
     return exp(-tauSum);
@@ -455,12 +466,17 @@ void cloudIntegrateSubSegment(vec3 ro, vec3 rd,
     float tauL = mix(tau0, tau1, u);
 
     float density = cloudDensityAtVisual(pm, worldUBO, skyUBO);
+    density *= cloudDistanceFade(pm, skyUBO);
     if (density <= 1e-4) return;
 
     float ext = sigmaT * density;
     float stepT = exp(-ext * ds);
 
-    float ms = 1.0 - pow(max(Tr, 1e-6), 0.25);
+    // Use midpoint transmittance for the in-step multiple-scattering heuristic.
+    // Using the step-entry Tr creates visible step bands at close range because
+    // the phase / lighting boost changes discontinuously from slice to slice.
+    float TrMid = Tr * exp(-ext * ds * 0.5);
+    float ms = 1.0 - pow(max(TrMid, 1e-6), 0.25);
     float phase = mix(phaseSS, phaseISO, ms);
 
     float tauLEff = tauL * (1.0 - ms * 0.75);
@@ -516,7 +532,11 @@ void cloudIntegrateRun(vec3 ro, vec3 rd,
 
     if (analyticMode) {
         // Analytic integration for a constant-density slab.
-        float ext = sigmaT;
+        vec3 pMid = ro + rd * (0.5 * (s + e));
+        float distanceFade = cloudDistanceFade(pMid, skyUBO);
+        if (distanceFade <= 1e-4) return;
+
+        float ext = sigmaT * distanceFade;
         float Tseg = exp(-ext * len);
 
         float TrMid = Tr * exp(-ext * len * 0.5);
@@ -531,7 +551,7 @@ void cloudIntegrateRun(vec3 ro, vec3 rd,
         Li *= (1.0 + ms * 6.0);
 
         float scatterIntegral = (1.0 - Tseg) / max(ext, 1e-6);
-        vec3 dL = (sigmaS * scatterIntegral) * phase * Li;
+        vec3 dL = (sigmaS * distanceFade * scatterIntegral) * phase * Li;
         Lacc += Tr * dL;
         Tr *= Tseg;
         return;
@@ -636,7 +656,7 @@ CloudSegmentResult integrateCloudSegment(vec3 ro, vec3 rd, float tMin, float tMa
 
     int cellX = int(floor(x / CLOUD_CELL_SIZE));
     int cellZ = int(floor(z / CLOUD_CELL_SIZE));
-    if (abs(cellX) > 32 || abs(cellZ) > 32) return o;
+    if (abs(cellX) > CLOUD_TILE_HALF_EXTENT || abs(cellZ) > CLOUD_TILE_HALF_EXTENT) return o;
 
     int stepX = (rd.x > 0.0) ? 1 : -1;
     int stepZ = (rd.z > 0.0) ? 1 : -1;
@@ -669,7 +689,7 @@ CloudSegmentResult integrateCloudSegment(vec3 ro, vec3 rd, float tMin, float tMa
         float ds = tNext - t;
         if (ds <= 0.0) break;
 
-        ivec2 tc = ivec2(cellX + 32, cellZ + 32);
+        ivec2 tc = ivec2(cellX + CLOUD_TILE_HALF_EXTENT, cellZ + CLOUD_TILE_HALF_EXTENT);
         float occ = cloudOcc01(skyUBO, tc);
 
         if (occ > 0.5) {
@@ -714,7 +734,7 @@ CloudSegmentResult integrateCloudSegment(vec3 ro, vec3 rd, float tMin, float tMa
             cellZ += stepZ;
         }
 
-        if (abs(cellX) > 32 || abs(cellZ) > 32) break;
+        if (abs(cellX) > CLOUD_TILE_HALF_EXTENT || abs(cellZ) > CLOUD_TILE_HALF_EXTENT) break;
     }
 
     if (inRun && Tr > 1e-4) {
@@ -737,3 +757,4 @@ CloudSegmentResult integrateCloudSegment(vec3 ro, vec3 rd, float tMin, float tMa
 }
 
 #endif // CLOUDS_GLSL
+

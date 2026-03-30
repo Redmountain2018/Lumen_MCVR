@@ -41,6 +41,7 @@ class World : public SharedObject<World> {
         BOAT_WATER_MASK,
         END_PORTAL,
         END_GATE_WAY,
+        WORLD_WATER_MASK,
         NUM_GEOMETRY_TYPES,
     };
 

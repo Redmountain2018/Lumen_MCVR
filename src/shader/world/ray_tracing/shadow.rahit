@@ -54,6 +54,7 @@ layout(push_constant) uniform PushConstant {
 } pc;
 #define SIMPLIFIED_INDIRECT ((pc.flags & 1) != 0)
 #define SIMPLIFY_THIS_RAY (SIMPLIFIED_INDIRECT && shadowRay.bounceIndex > 1)
+#define DEBUG_SHADOW_TRANSMISSION 0
 
 layout(location = 1) rayPayloadInEXT ShadowRay shadowRay;
 hitAttributeEXT vec2 attribs;
@@ -122,17 +123,36 @@ void main() {
 
     vec3 tint = (albedo * colorLayer).rgb;
     float alpha = (albedo * colorLayer).a;
-    if ((flags.g & 0xFF) == 255) {
-        // 使用与主射线一致的水参数
-        tint = vec3(0.75, 0.85, 1.0);  // 水蓝色
-        alpha = 1.0;                  // 水alpha值（与主射线一致）
     
-        // 直接进入透射分支，确保一致性
+    if (shadowRay.queryMode == 1u) {
+        if ((flags.g & 0xFF) == 255) {
+            ignoreIntersectionEXT;
+            return;
+        }
+
+        if (alpha < 0.05) {
+            ignoreIntersectionEXT;
+            return;
+        }
+
+        #if DEBUG_SHADOW_TRANSMISSION
+        shadowRay.radiance += vec3(1.0, 0.0, 0.0) * shadowRay.throughput;
+        #endif
+        shadowRay.hitT = gl_HitTEXT;
+        terminateRayEXT;
+    }
+
+
+    if ((flags.g & 0xFF) == 255) {
+        shadowRay.hitWater = 1u;
+        tint = vec3(1.0);//shadowRay.waterShadowTransmittance;  
+        alpha = 1.0; 
+    
         shadowRay.throughput *= tint;
         ignoreIntersectionEXT;
         return;
     }
-
+    
     if (!SIMPLIFY_THIS_RAY) {
         uint useGlint = v0.useGlint;
         uint glintTexture = v0.glintTexture;
@@ -161,6 +181,10 @@ void main() {
         LabPBRMat mat = convertLabPBRMaterial(albedo * colorLayer, specular, normalVal);
         hasTransmission = mat.transmission > 0.0;
     }
+
+    #if DEBUG_SHADOW_TRANSMISSION
+    shadowRay.radiance += vec3(alpha, hasTransmission ? 1.0 : 0.0, shadowRay.queryMode == 0u ? 0.0 : 1.0) * shadowRay.throughput;
+    #endif
 
     if (alpha < 0.05) {
         // cut-out

@@ -244,6 +244,48 @@ void RayTracingModule::initDescriptorTables() {
                                   VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_ANY_HIT_BIT_KHR |
                                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                 })
+                .defineDescriptorLayoutSetBinding({
+                    .binding = 8, // binding 8: water-only TLAS
+                    .descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+                    .descriptorCount = 1,
+                    .stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
+                })
+                .defineDescriptorLayoutSetBinding({
+                    .binding = 14, // water chunk origins
+                    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                    .descriptorCount = 1,
+                    .stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
+                })
+                .defineDescriptorLayoutSetBinding({
+                    .binding = 15, // water chunk sizes
+                    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                    .descriptorCount = 1,
+                    .stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
+                })
+                .defineDescriptorLayoutSetBinding({
+                    .binding = 16, // water occupancy offsets
+                    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                    .descriptorCount = 1,
+                    .stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
+                })
+                .defineDescriptorLayoutSetBinding({
+                    .binding = 17, // solid occupancy offsets
+                    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                    .descriptorCount = 1,
+                    .stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
+                })
+                .defineDescriptorLayoutSetBinding({
+                    .binding = 18, // water occupancy data
+                    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                    .descriptorCount = 1,
+                    .stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
+                })
+                .defineDescriptorLayoutSetBinding({
+                    .binding = 19, // solid occupancy data
+                    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                    .descriptorCount = 1,
+                    .stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
+                })
                 .endDescriptorLayoutSetBinding()
                 .endDescriptorLayoutSet()
                 .beginDescriptorLayoutSet() // set 2
@@ -463,6 +505,11 @@ void RayTracingModule::initPipeline() {
     endGatewayAnyHitShader_ =
         vk::Shader::create(device, (shaderPath / "world/ray_tracing/end_gateway_rahit.spv").string());
 
+    worldWaterMaskClosestHitShader_ =
+        vk::Shader::create(device, (shaderPath / "world/ray_tracing/world_water_mask_rchit.spv").string());
+    worldWaterMaskAnyHitShader_ =
+        vk::Shader::create(device, (shaderPath / "world/ray_tracing/world_water_mask_rahit.spv").string());
+
     rayTracingPipeline_ =
         vk::RayTracingPipelineBuilder{}
             .beginShaderStage()
@@ -484,6 +531,8 @@ void RayTracingModule::initPipeline() {
             .defineShaderStage(endPortalAnyHitShader_, VK_SHADER_STAGE_ANY_HIT_BIT_KHR)                     // 15
             .defineShaderStage(endGatewayClosestHitShader_, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)            // 16
             .defineShaderStage(endGatewayAnyHitShader_, VK_SHADER_STAGE_ANY_HIT_BIT_KHR)                    // 17
+            .defineShaderStage(worldWaterMaskClosestHitShader_, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)        // 18
+            .defineShaderStage(worldWaterMaskAnyHitShader_, VK_SHADER_STAGE_ANY_HIT_BIT_KHR)                // 19
             .endShaderStage()
             .beginShaderGroup()
             .defineShaderGroup(VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR, 0, VK_SHADER_UNUSED_KHR,
@@ -511,6 +560,8 @@ void RayTracingModule::initPipeline() {
                                VK_SHADER_UNUSED_KHR) // end portal
             .defineShaderGroup(VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR, VK_SHADER_UNUSED_KHR, 16, 17,
                                VK_SHADER_UNUSED_KHR) // end gateway
+            .defineShaderGroup(VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR, VK_SHADER_UNUSED_KHR, 18, 19,
+                               VK_SHADER_UNUSED_KHR) // world water mask
             .endShaderGroup()
             .definePipelineLayout(rayTracingDescriptorTables_[0])
             .build(device);
@@ -522,7 +573,7 @@ void RayTracingModule::initSBT() {
     sbts_.resize(framework->swapchain()->imageCount());
     for (int i = 0; i < framework->swapchain()->imageCount(); i++) {
         sbts_[i] = vk::SBT::create(framework->physicalDevice(), framework->device(), framework->vma(),
-                                   rayTracingPipeline_, 3, 8);
+                                   rayTracingPipeline_, 3, 9);
     }
 }
 
@@ -569,6 +620,27 @@ void RayTracingModuleContext::render() {
     auto module = rayTracingModule.lock();
 
     rayTracingDescriptorTable->bindAS(worldPrepareContext->tlas, 1, 0);
+    rayTracingDescriptorTable->bindAS(worldPrepareContext->waterTlas != nullptr ? worldPrepareContext->waterTlas
+                                                                                 : worldPrepareContext->tlas,
+                                      1, 8);
+    if (worldPrepareContext->waterChunkOriginBuffer != nullptr) {
+        rayTracingDescriptorTable->bindBuffer(worldPrepareContext->waterChunkOriginBuffer, 1, 14);
+    }
+    if (worldPrepareContext->waterChunkSizeBuffer != nullptr) {
+        rayTracingDescriptorTable->bindBuffer(worldPrepareContext->waterChunkSizeBuffer, 1, 15);
+    }
+    if (worldPrepareContext->waterOccupancyOffsetBuffer != nullptr) {
+        rayTracingDescriptorTable->bindBuffer(worldPrepareContext->waterOccupancyOffsetBuffer, 1, 16);
+    }
+    if (worldPrepareContext->solidOccupancyOffsetBuffer != nullptr) {
+        rayTracingDescriptorTable->bindBuffer(worldPrepareContext->solidOccupancyOffsetBuffer, 1, 17);
+    }
+    if (worldPrepareContext->waterOccupancyDataBuffer != nullptr) {
+        rayTracingDescriptorTable->bindBuffer(worldPrepareContext->waterOccupancyDataBuffer, 1, 18);
+    }
+    if (worldPrepareContext->solidOccupancyDataBuffer != nullptr) {
+        rayTracingDescriptorTable->bindBuffer(worldPrepareContext->solidOccupancyDataBuffer, 1, 19);
+    }
     rayTracingDescriptorTable->bindBuffer(worldPrepareContext->blasOffsetsBuffer, 1, 1);
     rayTracingDescriptorTable->bindBuffer(worldPrepareContext->vertexBufferAddr, 1, 2);
     rayTracingDescriptorTable->bindBuffer(worldPrepareContext->indexBufferAddr, 1, 3);

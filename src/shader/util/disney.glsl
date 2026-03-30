@@ -414,7 +414,7 @@ vec3 DisneySampleSmooth(LabPBRMat mat, vec3 V, vec3 N, out vec3 L, out float pdf
 
         L = ToWorld(T, B, N, localL);
 
-        return mat.albedo; 
+        return mat.albedo;
     }
 }
 

@@ -30,10 +30,17 @@ JNIEXPORT void JNICALL Java_com_radiance_client_proxy_world_ChunkProxy_initNativ
 /*
  * Class:     com_radiance_client_proxy_world_ChunkProxy
  * Method:    rebuildSingle
- * Signature: (IIIJIJJJJJZ)V
+ * Signature: (IIIJIJJJJJJJIIIZ)V
  */
 JNIEXPORT void JNICALL Java_com_radiance_client_proxy_world_ChunkProxy_rebuildSingle
-  (JNIEnv *, jclass, jint, jint, jint, jlong, jint, jlong, jlong, jlong, jlong, jlong, jboolean);
+  (JNIEnv *, jclass,
+   jint, jint, jint,
+   jlong,
+   jint,
+   jlong, jlong, jlong, jlong, jlong,
+   jlong, jlong,
+   jint, jint, jint,
+   jboolean);
 
 /*
  * Class:     com_radiance_client_proxy_world_ChunkProxy

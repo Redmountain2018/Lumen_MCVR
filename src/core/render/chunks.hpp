@@ -30,6 +30,12 @@ struct ChunkBuildTask {
     int *vertexCounts;
     vk::VertexFormat::PBRTriangle **vertices;
     bool isImportant;
+
+    uint32_t *waterOccupancy;
+    uint32_t *solidOccupancy;
+    int occupancySizeX;
+    int occupancySizeY;
+    int occupancySizeZ;
 };
 
 struct ChunkBuildData : public SharedObject<ChunkBuildData> {
@@ -39,6 +45,7 @@ struct ChunkBuildData : public SharedObject<ChunkBuildData> {
     uint32_t allVertexCount;
     uint32_t allIndexCount;
     uint32_t geometryCount;
+    uint32_t waterGeometryCount;
     std::vector<World::GeometryTypes> geometryTypes;
     std::vector<std::vector<vk::VertexFormat::PBRTriangle>> vertices;
     std::vector<std::vector<uint32_t>> indices;
@@ -60,6 +67,20 @@ struct ChunkBuildData : public SharedObject<ChunkBuildData> {
     std::vector<OMMGeometryData> ommGeometryData;
     std::shared_ptr<vk::BLAS> blas;
     std::shared_ptr<vk::BLASBuilder> blasBuilder;
+    std::vector<std::vector<vk::VertexFormat::PBRTriangle>> waterVertices;
+    std::vector<std::vector<uint32_t>> waterIndices;
+    std::vector<std::shared_ptr<vk::DeviceLocalBuffer>> waterVertexBuffers;
+    std::vector<std::shared_ptr<vk::DeviceLocalBuffer>> waterIndexBuffers;
+    std::shared_ptr<vk::BLAS> waterBlas;
+    std::shared_ptr<vk::BLASBuilder> waterBlasBuilder;
+
+    std::vector<uint32_t> waterOccupancy;
+    std::vector<uint32_t> solidOccupancy;
+    int occupancySizeX = 0;
+    int occupancySizeY = 0;
+    int occupancySizeZ = 0;
+    std::shared_ptr<vk::DeviceLocalBuffer> waterOccupancyBuffer;
+    std::shared_ptr<vk::DeviceLocalBuffer> solidOccupancyBuffer;
 
     ChunkBuildData(int64_t id,
                    int x,
@@ -71,7 +92,15 @@ struct ChunkBuildData : public SharedObject<ChunkBuildData> {
                    uint32_t geometryCount,
                    std::vector<World::GeometryTypes> &&geometryTypes,
                    std::vector<std::vector<vk::VertexFormat::PBRTriangle>> &&vertices,
-                   std::vector<std::vector<uint32_t>> &&indices);
+                   std::vector<std::vector<uint32_t>> &&indices,
+                   std::vector<std::vector<vk::VertexFormat::PBRTriangle>> &&waterVertices,
+                   std::vector<std::vector<uint32_t>> &&waterIndices,
+                   std::vector<uint32_t> &&waterOccupancy,
+                   std::vector<uint32_t> &&solidOccupancy,
+                   int occupancySizeX,
+                   int occupancySizeY,
+                   int occupancySizeZ);
+
     ~ChunkBuildData();
 
     void build(bool allowMicromapBake = true, bool skipOMM = false);
@@ -127,11 +156,18 @@ struct ChunkRenderData : public SharedObject<ChunkRenderData> {
     uint32_t allVertexCount;
     uint32_t allIndexCount;
     uint32_t geometryCount;
+    uint32_t waterGeometryCount;
     std::shared_ptr<std::vector<World::GeometryTypes>> geometryTypes;
     std::shared_ptr<std::vector<std::shared_ptr<vk::DeviceLocalBuffer>>> vertexBuffers;
     std::shared_ptr<std::vector<std::shared_ptr<vk::DeviceLocalBuffer>>> indexBuffers;
     std::shared_ptr<std::vector<std::vector<vk::VertexFormat::PBRTriangle>>> vertices;
     std::shared_ptr<std::vector<std::vector<uint32_t>>> indices;
+    std::shared_ptr<vk::BLAS> waterBlas;
+    std::shared_ptr<vk::DeviceLocalBuffer> waterOccupancyBuffer;
+    std::shared_ptr<vk::DeviceLocalBuffer> solidOccupancyBuffer;
+    int occupancySizeX;
+    int occupancySizeY;
+    int occupancySizeZ;
 };
 
 struct Chunk1 : public SharedObject<Chunk1> {
@@ -150,10 +186,20 @@ struct Chunk1 : public SharedObject<Chunk1> {
     int64_t blasVersion = -1;
     std::shared_ptr<std::vector<std::shared_ptr<vk::DeviceLocalBuffer>>> vertexBuffers;
     std::shared_ptr<std::vector<std::shared_ptr<vk::DeviceLocalBuffer>>> indexBuffers;
+    std::shared_ptr<vk::BLAS> waterBlas;
+
+    std::vector<uint32_t> waterOccupancy;
+    std::vector<uint32_t> solidOccupancy;
+    std::shared_ptr<vk::DeviceLocalBuffer> waterOccupancyBuffer;
+    std::shared_ptr<vk::DeviceLocalBuffer> solidOccupancyBuffer;
+    int occupancySizeX = 0;
+    int occupancySizeY = 0;
+    int occupancySizeZ = 0;
 
     uint32_t allVertexCount;
     uint32_t allIndexCount;
     uint32_t geometryCount;
+    uint32_t waterGeometryCount;
     std::shared_ptr<std::vector<World::GeometryTypes>> geometryTypes;
     std::shared_ptr<std::vector<std::vector<vk::VertexFormat::PBRTriangle>>> vertices;
     std::shared_ptr<std::vector<std::vector<uint32_t>>> indices;

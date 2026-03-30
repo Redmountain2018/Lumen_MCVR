@@ -22,7 +22,14 @@ ChunkBuildData::ChunkBuildData(int64_t id,
                                uint32_t geometryCount,
                                std::vector<World::GeometryTypes> &&geometryTypes,
                                std::vector<std::vector<vk::VertexFormat::PBRTriangle>> &&vertices,
-                               std::vector<std::vector<uint32_t>> &&indices)
+                               std::vector<std::vector<uint32_t>> &&indices,
+                               std::vector<std::vector<vk::VertexFormat::PBRTriangle>> &&waterVertices,
+                               std::vector<std::vector<uint32_t>> &&waterIndices,
+                               std::vector<uint32_t> &&waterOccupancy,
+                               std::vector<uint32_t> &&solidOccupancy,
+                               int occupancySizeX,
+                               int occupancySizeY,
+                               int occupancySizeZ)
     : id(id),
       x(x),
       y(y),
@@ -31,11 +38,21 @@ ChunkBuildData::ChunkBuildData(int64_t id,
       allVertexCount(allVertexCount),
       allIndexCount(allIndexCount),
       geometryCount(geometryCount),
+      waterGeometryCount(static_cast<uint32_t>(waterVertices.size())),
       geometryTypes(std::move(geometryTypes)),
       vertices(std::move(vertices)),
       indices(std::move(indices)),
+      waterVertices(std::move(waterVertices)),
+      waterIndices(std::move(waterIndices)),
+      waterOccupancy(std::move(waterOccupancy)),
+      solidOccupancy(std::move(solidOccupancy)),
+      occupancySizeX(occupancySizeX),
+      occupancySizeY(occupancySizeY),
+      occupancySizeZ(occupancySizeZ),
       blas(nullptr),
-      blasBuilder(nullptr) {}
+      blasBuilder(nullptr),
+      waterBlas(nullptr),
+      waterBlasBuilder(nullptr) {}
 
 ChunkBuildData::~ChunkBuildData() {
     for (auto &gd : ommGeometryData) {
@@ -373,6 +390,66 @@ void ChunkBuildData::build(bool allowMicromapBake, bool skipOMM) {
                ->querySizeInfo(device)
                ->allocateBuffers(physicalDevice, device, vma)
                ->build(device);
+
+    if (!waterVertices.empty()) {
+        waterBlasBuilder = vk::BLASBuilder::create();
+        auto waterGeometryBuilder = waterBlasBuilder->beginGeometries();
+
+        for (int i = 0; i < waterVertices.size(); i++) {
+            auto waterVertexBuffer =
+                vk::DeviceLocalBuffer::create(vma, device,
+                                              waterVertices[i].size() * sizeof(vk::VertexFormat::PBRTriangle),
+                                              VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                                                  VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+                                                  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+            waterVertexBuffer->uploadToStagingBuffer(waterVertices[i].data());
+            waterVertexBuffers.push_back(waterVertexBuffer);
+
+            auto waterIndexBuffer =
+                vk::DeviceLocalBuffer::create(vma, device,
+                                              waterIndices[i].size() * sizeof(uint32_t),
+                                              VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                                                  VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+                                                  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+            waterIndexBuffer->uploadToStagingBuffer(waterIndices[i].data());
+            waterIndexBuffers.push_back(waterIndexBuffer);
+
+            waterGeometryBuilder->defineTriangleGeomrtry<vk::VertexFormat::PBRTriangle>(
+                waterVertexBuffers[i],
+                waterVertices[i].size(),
+                waterIndexBuffers[i],
+                waterIndices[i].size(),
+                true);
+        }
+
+    if (!waterOccupancy.empty()) {
+        waterOccupancyBuffer = vk::DeviceLocalBuffer::create(
+            vma,
+            device,
+            waterOccupancy.size() * sizeof(uint32_t),
+            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        waterOccupancyBuffer->uploadToStagingBuffer(waterOccupancy.data());
+    }
+
+    if (!solidOccupancy.empty()) {
+        solidOccupancyBuffer = vk::DeviceLocalBuffer::create(
+            vma,
+            device,
+            solidOccupancy.size() * sizeof(uint32_t),
+            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        solidOccupancyBuffer->uploadToStagingBuffer(solidOccupancy.data());
+    }
+
+        waterGeometryBuilder->endGeometries();
+        waterBlas = waterBlasBuilder->defineBuildProperty(VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR)
+                        ->querySizeInfo(device)
+                        ->allocateBuffers(physicalDevice, device, vma)
+                        ->build(device);
+    }
 }
 
 ChunkBuildDataBatch::ChunkBuildDataBatch(uint32_t maxBatchSize,
@@ -521,6 +598,19 @@ void ChunkBuildScheduler::tryScheduleBatches(uint32_t maxBatchSize) {
                         gd.descBuffer->uploadToBuffer(worldAsyncBuffer);
                     }
                 }
+                
+                for (int i = 0; i < chunkBuildData->waterVertexBuffers.size(); i++) {
+                    chunkBuildData->waterVertexBuffers[i]->uploadToBuffer(worldAsyncBuffer);
+                    chunkBuildData->waterIndexBuffers[i]->uploadToBuffer(worldAsyncBuffer);
+                }
+
+                if (chunkBuildData->waterOccupancyBuffer != nullptr) {
+                    chunkBuildData->waterOccupancyBuffer->uploadToBuffer(worldAsyncBuffer);
+                }
+                if (chunkBuildData->solidOccupancyBuffer != nullptr) {
+                    chunkBuildData->solidOccupancyBuffer->uploadToBuffer(worldAsyncBuffer);
+                }
+
             }
 
             // Barrier: transfer → micromap build + BLAS build
@@ -586,6 +676,52 @@ void ChunkBuildScheduler::tryScheduleBatches(uint32_t maxBatchSize) {
                         });
                     }
                 }
+
+                for (int i = 0; i < chunkBuildData->waterVertexBuffers.size(); i++) {
+                    bufferBarriers.push_back(vk::CommandBuffer::BufferMemoryBarrier{
+                        .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                        .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                        .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                        .srcQueueFamilyIndex = secondaryQueueIndex,
+                        .dstQueueFamilyIndex = secondaryQueueIndex,
+                        .buffer = chunkBuildData->waterVertexBuffers[i],
+                    });
+
+                    bufferBarriers.push_back(vk::CommandBuffer::BufferMemoryBarrier{
+                        .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                        .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                        .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                        .srcQueueFamilyIndex = secondaryQueueIndex,
+                        .dstQueueFamilyIndex = secondaryQueueIndex,
+                        .buffer = chunkBuildData->waterIndexBuffers[i],
+                    });
+                }
+                if (chunkBuildData->waterOccupancyBuffer != nullptr) {
+                    bufferBarriers.push_back(vk::CommandBuffer::BufferMemoryBarrier{
+                        .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                        .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+                        .dstStageMask = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+                        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT,
+                        .srcQueueFamilyIndex = secondaryQueueIndex,
+                        .dstQueueFamilyIndex = secondaryQueueIndex,
+                        .buffer = chunkBuildData->waterOccupancyBuffer,
+                    });
+                }
+
+                if (chunkBuildData->solidOccupancyBuffer != nullptr) {
+                    bufferBarriers.push_back(vk::CommandBuffer::BufferMemoryBarrier{
+                        .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                        .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+                        .dstStageMask = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+                        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT,
+                        .srcQueueFamilyIndex = secondaryQueueIndex,
+                        .dstQueueFamilyIndex = secondaryQueueIndex,
+                        .buffer = chunkBuildData->solidOccupancyBuffer,
+                    });
+                }
+
             }
             worldAsyncBuffer->barriersBufferImage(bufferBarriers, {});
 
@@ -636,6 +772,9 @@ void ChunkBuildScheduler::tryScheduleBatches(uint32_t maxBatchSize) {
             std::vector<std::shared_ptr<vk::BLASBuilder>> builders;
             for (auto chunkBuildData : chunkBuildDataBatch->batchData) {
                 builders.push_back(chunkBuildData->blasBuilder);
+                if (chunkBuildData->waterBlasBuilder != nullptr) {
+                    builders.push_back(chunkBuildData->waterBlasBuilder);
+                }
             }
             vk::BLASBuilder::batchSubmit(builders, worldAsyncBuffer);
 
@@ -694,6 +833,18 @@ void Chunk1::enqueue(std::shared_ptr<ChunkBuildData> chunkBuildData) {
         gc.collect(blas);
         blas = chunkBuildData->blas;
 
+        gc.collect(waterBlas);
+        waterBlas = chunkBuildData->waterBlas;
+
+        gc.collect(waterOccupancyBuffer);
+        waterOccupancyBuffer = chunkBuildData->waterOccupancyBuffer;
+
+        gc.collect(solidOccupancyBuffer);
+        solidOccupancyBuffer = chunkBuildData->solidOccupancyBuffer;
+
+        waterOccupancy = std::move(chunkBuildData->waterOccupancy);
+        solidOccupancy = std::move(chunkBuildData->solidOccupancy);
+
         gc.collect(vertexBuffers);
         vertexBuffers = std::make_shared<std::vector<std::shared_ptr<vk::DeviceLocalBuffer>>>(
             std::move(chunkBuildData->vertexBuffers));
@@ -703,6 +854,7 @@ void Chunk1::enqueue(std::shared_ptr<ChunkBuildData> chunkBuildData) {
             std::move(chunkBuildData->indexBuffers));
     } else {
         gc.collect(chunkBuildData->blas);
+        gc.collect(chunkBuildData->waterBlas);
 
         gc.collect(std::make_shared<std::vector<std::shared_ptr<vk::DeviceLocalBuffer>>>(
             std::move(chunkBuildData->vertexBuffers)));
@@ -714,6 +866,10 @@ void Chunk1::enqueue(std::shared_ptr<ChunkBuildData> chunkBuildData) {
     allVertexCount = chunkBuildData->allVertexCount;
     allIndexCount = chunkBuildData->allIndexCount;
     geometryCount = chunkBuildData->geometryCount;
+    waterGeometryCount = chunkBuildData->waterGeometryCount;
+    occupancySizeX = chunkBuildData->occupancySizeX;
+    occupancySizeY = chunkBuildData->occupancySizeY;
+    occupancySizeZ = chunkBuildData->occupancySizeZ;
     geometryTypes = std::make_shared<std::vector<World::GeometryTypes>>(std::move(chunkBuildData->geometryTypes));
     vertices =
         std::make_shared<std::vector<std::vector<vk::VertexFormat::PBRTriangle>>>(std::move(chunkBuildData->vertices));
@@ -731,6 +887,22 @@ void Chunk1::invalidate() {
     gc.collect(blas);
     blas = nullptr;
 
+    gc.collect(waterBlas);
+    waterBlas = nullptr;
+
+    waterOccupancy.clear();
+    solidOccupancy.clear();
+
+    gc.collect(waterOccupancyBuffer);
+    waterOccupancyBuffer = nullptr;
+
+    gc.collect(solidOccupancyBuffer);
+    solidOccupancyBuffer = nullptr;
+
+    occupancySizeX = 0;
+    occupancySizeY = 0;
+    occupancySizeZ = 0;
+
     gc.collect(vertexBuffers);
     vertexBuffers = nullptr;
 
@@ -744,11 +916,18 @@ std::shared_ptr<ChunkRenderData> Chunk1::tryGetValid() {
     ret->y = y;
     ret->z = z;
     ret->blas = blas;
+    ret->waterBlas = waterBlas;
+    ret->waterOccupancyBuffer = waterOccupancyBuffer;
+    ret->solidOccupancyBuffer = solidOccupancyBuffer;
+    ret->occupancySizeX = occupancySizeX;
+    ret->occupancySizeY = occupancySizeY;
+    ret->occupancySizeZ = occupancySizeZ;
     ret->vertexBuffers = vertexBuffers;
     ret->indexBuffers = indexBuffers;
     ret->allVertexCount = allVertexCount;
     ret->allIndexCount = allIndexCount;
     ret->geometryCount = geometryCount;
+    ret->waterGeometryCount = waterGeometryCount;
     ret->geometryTypes = geometryTypes;
     ret->vertices = vertices;
     ret->indices = indices;
@@ -834,31 +1013,63 @@ void Chunks::queueChunkBuild(ChunkBuildTask task) {
     std::vector<World::GeometryTypes> geometryTypes;
     std::vector<std::vector<vk::VertexFormat::PBRTriangle>> vertices;
     std::vector<std::vector<uint32_t>> indices;
+    std::vector<std::vector<vk::VertexFormat::PBRTriangle>> waterVertices;
+    std::vector<std::vector<uint32_t>> waterIndices;
+
+    int occupancyTotalSize = task.occupancySizeX * task.occupancySizeY * task.occupancySizeZ;
+    std::vector<uint32_t> waterOccupancy;
+    std::vector<uint32_t> solidOccupancy;
+    if (task.waterOccupancy != nullptr && occupancyTotalSize > 0) {
+        waterOccupancy.assign(task.waterOccupancy, task.waterOccupancy + occupancyTotalSize);
+    }
+    if (task.solidOccupancy != nullptr && occupancyTotalSize > 0) {
+        solidOccupancy.assign(task.solidOccupancy, task.solidOccupancy + occupancyTotalSize);
+    }
 
     for (int i = 0; i < task.geometryCount; i++) {
         World::GeometryTypes geometryType = static_cast<World::GeometryTypes>(task.geometryTypes[i]);
         int geometryTexture = task.geometryTextures[i];
-        geometryTypes.push_back(geometryType);
 
-        auto &geometryVertices = vertices.emplace_back();
-        auto &geometryIndices = indices.emplace_back();
+        if (geometryType == World::WORLD_WATER_MASK) {
+            auto &waterGeometryVertices = waterVertices.emplace_back();
+            auto &waterGeometryIndices = waterIndices.emplace_back();
 
-        geometryVertices.resize(task.vertexCounts[i]);
-        std::memcpy(geometryVertices.data(), task.vertices[i],
-                    task.vertexCounts[i] * sizeof(vk::VertexFormat::PBRTriangle));
+            waterGeometryVertices.resize(task.vertexCounts[i]);
+            std::memcpy(waterGeometryVertices.data(), task.vertices[i],
+                        task.vertexCounts[i] * sizeof(vk::VertexFormat::PBRTriangle));
 
-        for (int j = 0; j < task.vertexCounts[i]; j += 4) {
-            geometryIndices.push_back(j + 0);
-            geometryIndices.push_back(j + 1);
-            geometryIndices.push_back(j + 2);
-            geometryIndices.push_back(j + 2);
-            geometryIndices.push_back(j + 3);
-            geometryIndices.push_back(j + 0);
+            for (int j = 0; j < task.vertexCounts[i]; j += 4) {
+                waterGeometryIndices.push_back(j + 0);
+                waterGeometryIndices.push_back(j + 1);
+                waterGeometryIndices.push_back(j + 2);
+                waterGeometryIndices.push_back(j + 2);
+                waterGeometryIndices.push_back(j + 3);
+                waterGeometryIndices.push_back(j + 0);
+            }
+        } else {
+            geometryTypes.push_back(geometryType);
+
+            auto &geometryVertices = vertices.emplace_back();
+            auto &geometryIndices = indices.emplace_back();
+
+            geometryVertices.resize(task.vertexCounts[i]);
+            std::memcpy(geometryVertices.data(), task.vertices[i],
+                        task.vertexCounts[i] * sizeof(vk::VertexFormat::PBRTriangle));
+
+            for (int j = 0; j < task.vertexCounts[i]; j += 4) {
+                geometryIndices.push_back(j + 0);
+                geometryIndices.push_back(j + 1);
+                geometryIndices.push_back(j + 2);
+                geometryIndices.push_back(j + 2);
+                geometryIndices.push_back(j + 3);
+                geometryIndices.push_back(j + 0);
+            }
+
+            allVertexCount += geometryVertices.size();
+            allIndexCount += geometryIndices.size();
         }
-
-        allVertexCount += geometryVertices.size();
-        allIndexCount += geometryIndices.size();
     }
+
 
     auto framework = Renderer::instance().framework();
     auto vma = framework->vma();
@@ -869,7 +1080,17 @@ void Chunks::queueChunkBuild(ChunkBuildTask task) {
 
     std::shared_ptr<ChunkBuildData> chunkBuildData = ChunkBuildData::create(
         task.id, task.x, task.y, task.z, chunks_[task.id]->latestVersion++, allVertexCount, allIndexCount,
-        task.geometryCount, std::move(geometryTypes), std::move(vertices), std::move(indices));
+        static_cast<uint32_t>(geometryTypes.size()),
+        std::move(geometryTypes),
+        std::move(vertices),
+        std::move(indices),
+        std::move(waterVertices),
+        std::move(waterIndices),
+        std::move(waterOccupancy),
+        std::move(solidOccupancy),
+        task.occupancySizeX,
+        task.occupancySizeY,
+        task.occupancySizeZ);
 
     if (task.isImportant) {
         bool ommEnabled = device->hasOMM() && Renderer::options.ommEnabled;
@@ -885,19 +1106,54 @@ void Chunks::queueChunkBuild(ChunkBuildTask task) {
                                                                           nullptr);
             }
         }
+
+        for (int i = 0; i < chunkBuildData->waterVertexBuffers.size(); i++) {
+            Renderer::instance().buffers()->queueImportantWorldUpload(chunkBuildData->waterVertexBuffers[i],
+                                                                      chunkBuildData->waterIndexBuffers[i]);
+        }
+
+        if (chunkBuildData->waterOccupancyBuffer != nullptr) {
+            Renderer::instance().buffers()->queueImportantWorldUpload(chunkBuildData->waterOccupancyBuffer,
+                                                                      nullptr);
+        }
+        if (chunkBuildData->solidOccupancyBuffer != nullptr) {
+            Renderer::instance().buffers()->queueImportantWorldUpload(chunkBuildData->solidOccupancyBuffer,
+                                                                      nullptr);
+        }
+
+
+
         importantBLASBuilders_->push_back(chunkBuildData->blasBuilder);
+
+        if (chunkBuildData->waterBlasBuilder != nullptr) {
+            importantBLASBuilders_->push_back(chunkBuildData->waterBlasBuilder);
+        }
 
         // Copy geometry data BEFORE enqueue (enqueue moves them out)
         std::shared_ptr<ChunkBuildData> asyncRebuildData;
         if (ommEnabled) {
             asyncRebuildData = ChunkBuildData::create(
-                task.id, task.x, task.y, task.z,
-                chunks_[task.id]->latestVersion++, // higher version → will replace Phase 1 BLAS
-                allVertexCount, allIndexCount, task.geometryCount,
+                task.id,
+                task.x,
+                task.y,
+                task.z,
+                chunks_[task.id]->latestVersion++,
+                allVertexCount,
+                allIndexCount,
+                static_cast<uint32_t>(chunkBuildData->geometryTypes.size()),
                 std::vector<World::GeometryTypes>(chunkBuildData->geometryTypes),
                 std::vector<std::vector<vk::VertexFormat::PBRTriangle>>(chunkBuildData->vertices),
-                std::vector<std::vector<uint32_t>>(chunkBuildData->indices));
+                std::vector<std::vector<uint32_t>>(chunkBuildData->indices),
+                std::vector<std::vector<vk::VertexFormat::PBRTriangle>>(chunkBuildData->waterVertices),
+                std::vector<std::vector<uint32_t>>(chunkBuildData->waterIndices),
+                std::vector<uint32_t>(chunkBuildData->waterOccupancy),
+                std::vector<uint32_t>(chunkBuildData->solidOccupancy),
+                chunkBuildData->occupancySizeX,
+                chunkBuildData->occupancySizeY,
+                chunkBuildData->occupancySizeZ);
+
         }
+
 
         chunks_[task.id]->enqueue(chunkBuildData);
 

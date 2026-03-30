@@ -21,7 +21,13 @@ extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_world_ChunkProx
                                                                                      jlong vertexFormats,
                                                                                      jlong vertexCounts,
                                                                                      jlong vertexAddrs,
+                                                                                     jlong waterOccupancy,
+                                                                                     jlong solidOccupancy,
+                                                                                     jint occupancySizeX,
+                                                                                     jint occupancySizeY,
+                                                                                     jint occupancySizeZ,
                                                                                      jboolean important) {
+
     auto world = Renderer::instance().world();
     if (world == nullptr) return;
     world->chunks()->queueChunkBuild(ChunkBuildTask{
@@ -36,6 +42,12 @@ extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_world_ChunkProx
         .vertexCounts = reinterpret_cast<int *>(vertexCounts),
         .vertices = reinterpret_cast<vk::VertexFormat::PBRTriangle **>(vertexAddrs),
         .isImportant = static_cast<bool>(important),
+        .waterOccupancy = reinterpret_cast<uint32_t *>(waterOccupancy),
+        .solidOccupancy = reinterpret_cast<uint32_t *>(solidOccupancy),
+        .occupancySizeX = occupancySizeX,
+        .occupancySizeY = occupancySizeY,
+        .occupancySizeZ = occupancySizeZ,
+
     });
 }
 
