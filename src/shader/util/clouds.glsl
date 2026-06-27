@@ -1,8 +1,23 @@
 #ifndef CLOUDS_GLSL
 #define CLOUDS_GLSL
-
+#define CLOUDS_BLOCKY
+#define CLOUD_SCALE_BASE 0.02   // 噪声输入缩放基础值
+#define CLOUD_SIZE_SCALE_BASE 1.0 // 坐标缩放因子基础值
+#define CLOUD_SPEED 1.5
+// Uniform-based scaling multipliers
+float getCloudScaleMultiplier(SkyUBO skyUBO) {
+    // cloudWrap.w stores cloudScale multiplier (default 1.0)
+    return skyUBO.cloudWrap.w;
+}
+float getCloudSizeScaleMultiplier(SkyUBO skyUBO) {
+    // cloudTile.w stores percentage as integer (default 100)
+    return float(skyUBO.cloudTile.w) / 100.0;
+}
 // Lightweight procedural cloud slab.
 // Designed to be used from raygen (segment integration) and closest-hit (sun transmittance).
+vec4 CloudColorSEUS(vec3 pos, vec3 viewDir, vec3 lightVector, vec3 sunColor,
+                vec3 skyColor, vec3 atmosphere, bool detail,
+                vec3 cameraPos, float frameTime, SkyUBO skyUBO);
 
 struct CloudSegmentResult {
     vec3 L; // in-scattered radiance (already accounts for self-shadow)
@@ -11,7 +26,11 @@ struct CloudSegmentResult {
 
 bool cloudTileEnabled(SkyUBO skyUBO) {
     // cloudTile.x is textures[] index for the 65x65 R8 mask
-    return skyUBO.cloudTile.x >= 0;
+    if (skyUBO.cloudShape.w >= 0.5) {
+        return true;
+    } else {
+        return skyUBO.cloudTile.x >= 0;
+    }
 }
 
 // Vanilla cloud mapping constants.
@@ -54,21 +73,25 @@ vec4 cloudFetchMaskRGBA(SkyUBO skyUBO, ivec2 tileCoord) {
 }
 
 float cloudOcc01(SkyUBO skyUBO, ivec2 tc) {
-    if (tc.x < 0 || tc.x >= CLOUD_TILE_SIZE || tc.y < 0 || tc.y >= CLOUD_TILE_SIZE) return 0.0;
-    return cloudFetchMaskRGBA(skyUBO, tc).r > 0.5 ? 1.0 : 0.0;
+    if (skyUBO.cloudShape.w < 0.5) {
+        if (tc.x < 0 || tc.x >= CLOUD_TILE_SIZE || tc.y < 0 || tc.y >= CLOUD_TILE_SIZE) return 0.0;
+        return cloudFetchMaskRGBA(skyUBO, tc).r > 0.5 ? 1.0 : 0.0;
+    } else {
+        return 1.0;
+    }
 }
 
 // Borders from mask texture: G=N, B=E, A=S. West is taken from left neighbor's east.
 void cloudBorders(SkyUBO skyUBO, ivec2 tc, out float bN, out float bE, out float bS, out float bW) {
-    if (tc.x < 0 || tc.x >= CLOUD_TILE_SIZE || tc.y < 0 || tc.y >= CLOUD_TILE_SIZE) {
+    if (skyUBO.cloudShape.w < 0.5) {
+        vec4 mask = cloudFetchMaskRGBA(skyUBO, tc);
+        bN = mask.g; // 北
+        bE = mask.b; // 东
+        bS = mask.a; // 南
+        bW = 0.0;
+    } else {
         bN = bE = bS = bW = 0.0;
-        return;
     }
-    vec4 m = cloudFetchMaskRGBA(skyUBO, tc);
-    bN = m.g > 0.5 ? 1.0 : 0.0;
-    bE = m.b > 0.5 ? 1.0 : 0.0;
-    bS = m.a > 0.5 ? 1.0 : 0.0;
-    bW = (tc.x > 0) ? (cloudFetchMaskRGBA(skyUBO, tc + ivec2(-1, 0)).b > 0.5 ? 1.0 : 0.0) : 0.0;
 }
 
 float cloudEdgeDistance01(vec2 inCell, float bN, float bE, float bS, float bW) {
@@ -100,22 +123,27 @@ float cloudEdgeDistance01(vec2 inCell, float bN, float bE, float bS, float bW) {
 // skyUBO.cloudWrap.xy stores vanilla intra-cell offsets (l,m) in blocks ([0,12)).
 bool cloudSampleTileMask(vec3 pCam, SkyUBO skyUBO, out vec2 inCell, out ivec2 tileCoord) {
     if (!cloudTileEnabled(skyUBO)) return false;
+    if (skyUBO.cloudShape.w < 0.5) {
+        float xLocal = pCam.x + skyUBO.cloudWrap.x;
+        float zLocal = pCam.z + skyUBO.cloudWrap.y;
 
-    float xLocal = pCam.x + skyUBO.cloudWrap.x;
-    float zLocal = pCam.z + skyUBO.cloudWrap.y;
+        float fx = xLocal / CLOUD_CELL_SIZE;
+        float fz = zLocal / CLOUD_CELL_SIZE;
 
-    float fx = xLocal / CLOUD_CELL_SIZE;
-    float fz = zLocal / CLOUD_CELL_SIZE;
+        int cellX = int(floor(fx));
+        int cellZ = int(floor(fz));
 
-    int cellX = int(floor(fx));
-    int cellZ = int(floor(fz));
+        // Extended RT cloud distance; the shader fades clouds before this boundary.
+        if (abs(cellX) > CLOUD_TILE_HALF_EXTENT || abs(cellZ) > CLOUD_TILE_HALF_EXTENT) return false;
 
-    // Extended RT cloud distance; the shader fades clouds before this boundary.
-    if (abs(cellX) > CLOUD_TILE_HALF_EXTENT || abs(cellZ) > CLOUD_TILE_HALF_EXTENT) return false;
-
-    tileCoord = ivec2(cellX + CLOUD_TILE_HALF_EXTENT, cellZ + CLOUD_TILE_HALF_EXTENT);
-    inCell = fract(vec2(fx, fz));
+        tileCoord = ivec2(cellX + CLOUD_TILE_HALF_EXTENT, cellZ + CLOUD_TILE_HALF_EXTENT);
+        inCell = fract(vec2(fx, fz));
     return true;
+    } else {
+        inCell = vec2(0.5, 0.5);
+        tileCoord = ivec2(0, 0);
+        return true;
+    }
 }
 
 float cloudValueNoise3(vec3 p) {
@@ -161,6 +189,226 @@ float cloudHash21(ivec2 p) {
 
 vec2 cloudHash22(ivec2 p) {
     return vec2(cloudHash31(ivec3(p, 0)), cloudHash31(ivec3(p, 1)));
+}
+
+// SEUS PTGI style 2D noise (approximation using hash)
+float Get2DNoise(vec2 pos) {
+    pos *= 0.5;
+    vec2 i = floor(pos);
+    vec2 f = fract(pos);
+    float a = cloudHash21(ivec2(i));
+    float b = cloudHash21(ivec2(i + vec2(1.0, 0.0)));
+    float c = cloudHash21(ivec2(i + vec2(0.0, 1.0)));
+    float d = cloudHash21(ivec2(i + vec2(1.0, 1.0)));
+    float ab = mix(a, b, f.x);
+    float cd = mix(c, d, f.x);
+    return mix(ab, cd, f.y);
+}
+
+// SEUS PTGI style 3D noise (approximation using hash)
+float Get3DNoise(vec3 pos) {
+    pos *= 0.5;
+    vec3 i = floor(pos);
+    vec3 f = fract(pos);
+    float a = cloudHash31(ivec3(i));
+    float b = cloudHash31(ivec3(i + vec3(1.0, 0.0, 0.0)));
+    float c = cloudHash31(ivec3(i + vec3(0.0, 1.0, 0.0)));
+    float d = cloudHash31(ivec3(i + vec3(1.0, 1.0, 0.0)));
+    float e = cloudHash31(ivec3(i + vec3(0.0, 0.0, 1.0)));
+    float fv = cloudHash31(ivec3(i + vec3(1.0, 0.0, 1.0)));
+    float g = cloudHash31(ivec3(i + vec3(0.0, 1.0, 1.0)));
+    float h = cloudHash31(ivec3(i + vec3(1.0, 1.0, 1.0)));
+    float ab = mix(a, b, f.x);
+    float cd = mix(c, d, f.x);
+    float ef = mix(e, fv, f.x);
+    float gh = mix(g, h, f.x);
+    float abcd = mix(ab, cd, f.y);
+    float efgh = mix(ef, gh, f.y);
+    return mix(abcd, efgh, f.z);
+}
+
+// SEUS PTGI Cloud Density (cumulus)
+float CloudDensity(vec3 pos, const int level, const float lunacrity, float wetness, vec3 cameraPos, float frameTime, SkyUBO skyUBO) {
+    float cloudDist = length(pos.xz - cameraPos.xz);
+    pos /= cloudDist * 0.00015 + 1.0;
+    float cloudScale = CLOUD_SCALE_BASE * getCloudScaleMultiplier(skyUBO);
+    pos *= cloudScale;
+    float sizeScale = CLOUD_SIZE_SCALE_BASE * getCloudSizeScaleMultiplier(skyUBO);
+
+    float n = 0.0;
+    float g = 1.0;
+    float w = 0.0;
+    pos.xy += vec2(1.0, 0.1) * frameTime * 0.02 * CLOUD_SPEED; // CLOUD_SPEED = 1.5
+    for (int i = 0; i < level; i++) {
+        n += Get2DNoise(pos.xz) * g;
+        w += g;
+
+        pos.x += frameTime * 0.02 * CLOUD_SPEED;
+        pos *= 3.0;
+        g *= lunacrity;
+    }
+
+    n /= w;
+    n *= sizeScale; 
+
+    n = n * 1.5 - 0.5;
+
+    n *= 1.0 - wetness * 0.4;
+    n += wetness * 0.6;
+
+	#ifdef CLOUDS_BLOCKY
+	#else
+	n = n * 1.5 - 0.0;
+	#endif
+
+    n = clamp(n, 0.0, 1.0);
+
+    return n;
+}
+
+float TraceCloudDensity(vec3 pos, vec3 lightDir, float perturbNoise, float cloudDensity, float cloudDist, vec3 cameraPos, float frameTime, SkyUBO skyUBO) {
+    float shadowFactor = 0.0;
+    for (int i = 1; i <= 2; i++) {
+        vec3 sp = pos + i * 200.0 * lightDir * (1.0 + perturbNoise * 0.025 * 2) * clamp(cloudDensity * 0.9 + 0.1, 0.0, 1.0);
+        float d = max(0.0, CloudDensity(sp, 3, 0.23, 0.0, cameraPos, frameTime, skyUBO) - cloudDist * 0.00002);
+
+        shadowFactor += d;
+    }
+    return shadowFactor;
+}
+
+// SEUS cloud density wrapper for MCVR
+float cloudDensitySEUS(vec3 worldPos, vec3 cameraPos, float wetness, float frameTime, SkyUBO skyUBO) {
+    // level = 3, lunacrity = 0.23 as default
+    return CloudDensity(worldPos, 3, 0.23, wetness, cameraPos, frameTime, skyUBO);
+}
+
+// ============================================================================
+// SEUS PTGI Cloud Color and Lighting Algorithms
+// ============================================================================
+
+float PhaseMie(float g, float LdotV, float LdotV2) {
+    float gg = g * g;
+    float a = (1.0 - gg) * (1.0 + LdotV2);
+    float b = 1.0 + gg - 2.0 * g * LdotV;
+    b *= sqrt(b);
+    b *= 2.0 + gg;
+    return 1.5 * a / b;
+}
+
+vec3 SunAbsorptionAtAltitude(vec3 worldLightVector, float altitude) {
+    // Simplified: no atmospheric absorption, just return sunlight color
+    return vec3(1.0);
+}
+
+vec3 CumulusSunlightColor(vec3 worldLightVector, vec3 colorSunlight) {
+    vec3 color = SunAbsorptionAtAltitude(worldLightVector, 1.0);
+    color *= clamp(worldLightVector.y * 40.0, 0.0, 1.0);
+    // Ignore night brightness for now
+    return color * colorSunlight;
+}
+
+vec3 CirrusSunlightColor(vec3 worldLightVector, vec3 colorSunlight) {
+    vec3 color = SunAbsorptionAtAltitude(worldLightVector, 1.5);
+    color *= clamp(worldLightVector.y * 40.0, 0.0, 1.0);
+    // Ignore night brightness for now
+    return color * colorSunlight;
+}
+
+#define CUMULUS_CLOUDS
+
+// SEUS PTGI CloudColor adapted for MCVR
+// pos: world position
+// viewDir: normalized view direction (from camera to pos)
+// lightVector: normalized sun/moon direction (from skyUBO)
+// sunColor: sunlight color (already multiplied with radiance)
+// skyColor: sky ambient color
+// atmosphere: atmospheric scattering color (not used currently)
+// detail: whether to compute detailed perturb noise (true for high quality)
+// cameraPos: camera position in world
+// frameTime: current time in seconds
+// skyUBO: sky uniform buffer
+vec4 CloudColorSEUS(vec3 pos, vec3 viewDir, vec3 lightVector, vec3 sunColor,
+                vec3 skyColor, vec3 atmosphere, bool detail,
+                vec3 cameraPos, float frameTime, SkyUBO skyUBO) {
+    // CUMULUS_CLOUDS defined, proceed
+
+    float LdotV = dot(viewDir, -lightVector);
+    float LdotV01 = LdotV * 0.5 + 0.5;
+    float LdotV2 = LdotV * LdotV;
+    float cloudDist = length(pos.xz - cameraPos.xz);
+
+    // Use existing CloudDensity with wetness = 0.0
+    float cloudDensity = CloudDensity(pos, 3, 0.23, skyUBO.rainGradient, cameraPos, frameTime, skyUBO);
+
+    float perturbNoise = 2.0;
+    if (detail) {
+        vec3 motion = vec3(frameTime * 0.005 * CLOUD_SPEED, 0.0, 0.0);
+        vec3 ppos = viewDir + Get3DNoise(viewDir * 20.0) * 0.02;
+        perturbNoise = (1.0 - Get3DNoise((ppos - motion) * 50.0)) * 2.0 / (1.0 + cloudDist * 0.001 * 0.2);
+        perturbNoise += (1.0 - Get3DNoise((ppos - motion) * 100.0)) * 1.0 / (1.0 + cloudDist * 0.0005 * 0.2);
+        perturbNoise += (1.0 - Get3DNoise((ppos - motion) * 200.0)) * 0.5 / (1.0 + cloudDist * 0.00025 * 0.2);
+        perturbNoise += (1.0 - Get3DNoise((ppos - motion) * 400.0)) * 0.25 / (1.0 + cloudDist * 0.000125 * 0.2);
+    }
+    perturbNoise *= cloudDist * 0.0015 + 1.0;
+    perturbNoise *= 1.2;
+
+    cloudDensity = max(0.0, cloudDensity - perturbNoise * 0.007);
+    cloudDensity = max(0.0, cloudDensity - perturbNoise * 0.007 + 0.01);
+
+    // Sunlight
+    float sunFlux = 0.0;
+    float shadowFactor = 0.0;
+    {
+        vec3 lightDir = normalize(lightVector + viewDir * 1.0);
+        lightDir += viewDir * cloudDist * 0.0003;
+        lightDir *= pow(-LdotV * 0.5 + 0.5, 0.25);
+
+        shadowFactor = TraceCloudDensity(pos + viewDir * cloudDensity * 0.1 * cloudDist,
+                                         lightDir, perturbNoise, cloudDensity, cloudDist,
+                                         cameraPos, frameTime, skyUBO);
+        shadowFactor -= perturbNoise * 0.0021;
+        shadowFactor /= abs(lightVector.y) * 2.0 + 1.0;
+        shadowFactor = max(0.0, shadowFactor);
+
+        sunFlux = exp2(-shadowFactor * 8.5) * 3.0;
+        sunFlux += exp2(-shadowFactor * 0.7) * 0.035;
+    }
+
+    // Skylight
+    float skyFlux = 0.0;
+    float skyFactor = 0.0;
+    {
+        vec3 lightDir = viewDir;
+        lightDir *= pow(-LdotV * 0.5 + 0.5, 0.25);
+
+        skyFactor = TraceCloudDensity(pos, lightDir, perturbNoise, cloudDensity, cloudDist,
+                                      cameraPos, frameTime, skyUBO);
+
+        skyFlux = exp2(-skyFactor * 2.5) * 1.0;
+        skyFlux += exp2(-skyFactor * 0.7) * 0.175;
+    }
+
+    vec3 color = vec3(0.0);
+    const float sunMult = 0.3 * 0.8;
+    vec3 cumulusSunColor = CumulusSunlightColor(lightVector, sunColor);
+
+    color += sunFlux * PhaseMie(exp(-cloudDensity * 18.0), LdotV, LdotV2) * 9.0 * sunMult;
+    if (detail) {
+        color += exp2(-shadowFactor * 15.7) * 10.035 * sunMult * PhaseMie(0.8, LdotV, LdotV2);
+    }
+    color *= cumulusSunColor;
+
+    color += mix(skyColor * skyFlux, atmosphere * 0.5, vec3(exp2(-cloudDensity * 12.0)));
+    vec3 cirrusLightColor = CirrusSunlightColor(lightVector, sunColor);
+    color += mix(cirrusLightColor * skyFlux * 2.0, cirrusLightColor * 7.0,
+                 vec3(exp2(-cloudDensity * 12.0))) * 0.5 * sunMult;
+
+    color += vec3(sunColor * max(0.0, 2.5 - skyFlux) * 0.2) * (1.0 - skyUBO.rainGradient);
+
+    cloudDensity /= cloudDist * 0.0001 + 0.25;
+    cloudDensity = 1.0 - exp(-cloudDensity * cloudDensity * 45.0);
+    return vec4(color, cloudDensity);
 }
 
 // 2D Worley F1 distance (0 = at feature point).
@@ -243,7 +491,7 @@ bool cloudIntersectSlabY(vec3 ro, vec3 rd, float y0, float y1, out float t0, out
 // Density field: vanilla Fancy tile mask (hard silhouette) + continuous puffy interior modulation.
 // pCam is camera-relative world position.
 float cloudDensityAt(vec3 pCam, WorldUBO worldUBO, SkyUBO skyUBO) {
-    // Fast clouds: uniform extruded slab driven by vanilla Fancy tile occupancy.
+    // Fast clouds: uniform extruded slab driven by SEUS PTGI density.
     float thickness = skyUBO.envCloud.y;
     float sigmaT = skyUBO.envCloud.z;
     if (isnan(skyUBO.envCloud.x) || thickness <= 0.0 || sigmaT <= 0.0) return 0.0;
@@ -253,101 +501,117 @@ float cloudDensityAt(vec3 pCam, WorldUBO worldUBO, SkyUBO skyUBO) {
     float topYRel = baseYRel + thickness;
     if (pCam.y < baseYRel || pCam.y > topYRel) return 0.0;
 
-    vec2 inCell;
-    ivec2 tc;
-    if (!cloudSampleTileMask(pCam, skyUBO, inCell, tc)) return 0.0;
+    if (skyUBO.cloudShape.w < 0.5) {
+        vec2 inCell;
+        ivec2 tc;
+        if (!cloudSampleTileMask(pCam, skyUBO, inCell, tc)) return 0.0;
 
-    float puffiness = clamp(skyUBO.cloudShape.x, 0.0, 2.0);
-    float edgeSoft  = mix(0.0, 0.18, clamp(puffiness, 0.0, 1.0));
+        float puffiness = clamp(skyUBO.cloudShape.x, 0.0, 2.0);
+        float edgeSoft  = mix(0.0, 0.18, clamp(puffiness, 0.0, 1.0));
 
-    bool occupied = cloudOcc01(skyUBO, tc) > 0.5;
+        bool occupied = cloudOcc01(skyUBO, tc) > 0.5;
 
-    if (!occupied) {
-        // Concave corner fill: when this empty cell has two adjacent axis-aligned
-        // occupied neighbors that share a corner (forming a 90-degree internal notch),
-        // treat the void as part of the cloud mass by returning density proportional
-        // to how far the sample sits inside the filled corner radius.
-        if (puffiness > 1e-4) {
-            float oN = cloudOcc01(skyUBO, tc + ivec2( 0, -1));
-            float oS = cloudOcc01(skyUBO, tc + ivec2( 0,  1));
-            float oE = cloudOcc01(skyUBO, tc + ivec2( 1,  0));
-            float oW = cloudOcc01(skyUBO, tc + ivec2(-1,  0));
+        if (!occupied) {
+            // Concave corner fill: when this empty cell has two adjacent axis-aligned
+            // occupied neighbors that share a corner (forming a 90-degree internal notch),
+            // treat the void as part of the cloud mass by returning density proportional
+            // to how far the sample sits inside the filled corner radius.
+            if (puffiness > 1e-4) {
+                float oN = cloudOcc01(skyUBO, tc + ivec2( 0, -1));
+                float oS = cloudOcc01(skyUBO, tc + ivec2( 0,  1));
+                float oE = cloudOcc01(skyUBO, tc + ivec2( 1,  0));
+                float oW = cloudOcc01(skyUBO, tc + ivec2(-1,  0));
 
-            // Check all four concave corner configurations.
-            // For each, the corner point is the shared corner between the two occupied
-            // neighbors. The distance is measured from the corner towards the cell interior.
-            // NW corner: N and W neighbors occupied → corner at (0,0) of this cell.
-            float cornerDist = 1e6;
-            if (oN > 0.5 && oW > 0.5)
-                cornerDist = min(cornerDist, length(vec2(inCell.x, inCell.y)));
-            // NE corner: N and E neighbors occupied → corner at (1,0).
-            if (oN > 0.5 && oE > 0.5)
-                cornerDist = min(cornerDist, length(vec2(1.0 - inCell.x, inCell.y)));
-            // SW corner: S and W neighbors occupied → corner at (0,1).
-            if (oS > 0.5 && oW > 0.5)
-                cornerDist = min(cornerDist, length(vec2(inCell.x, 1.0 - inCell.y)));
-            // SE corner: S and E neighbors occupied → corner at (1,1).
-            if (oS > 0.5 && oE > 0.5)
-                cornerDist = min(cornerDist, length(vec2(1.0 - inCell.x, 1.0 - inCell.y)));
+                // Check all four concave corner configurations.
+                // For each, the corner point is the shared corner between the two occupied
+                // neighbors. The distance is measured from the corner towards the cell interior.
+                // NW corner: N and W neighbors occupied → corner at (0,0) of this cell.
+                float cornerDist = 1e6;
+                if (oN > 0.5 && oW > 0.5)
+                    cornerDist = min(cornerDist, length(vec2(inCell.x, inCell.y)));
+                // NE corner: N and E neighbors occupied → corner at (1,0).
+                if (oN > 0.5 && oE > 0.5)
+                    cornerDist = min(cornerDist, length(vec2(1.0 - inCell.x, inCell.y)));
+                // SW corner: S and W neighbors occupied → corner at (0,1).
+                if (oS > 0.5 && oW > 0.5)
+                    cornerDist = min(cornerDist, length(vec2(inCell.x, 1.0 - inCell.y)));
+                // SE corner: S and E neighbors occupied → corner at (1,1).
+                if (oS > 0.5 && oE > 0.5)
+                    cornerDist = min(cornerDist, length(vec2(1.0 - inCell.x, 1.0 - inCell.y)));
 
-            if (cornerDist < 1e5) {
-                // The fill radius matches the edge-softening radius so the rounded
-                // corner blends continuously with the adjacent cells' puffiness fade.
-                float fillRadius = edgeSoft * 1.41421356; // diagonal extent of edgeSoft
-                float fade = 1.0 - smoothstep(0.0, fillRadius, cornerDist);
-                if (fade > 1e-3) return fade;
+                if (cornerDist < 1e5) {
+                    // The fill radius matches the edge-softening radius so the rounded
+                    // corner blends continuously with the adjacent cells' puffiness fade.
+                    float fillRadius = edgeSoft * 1.41421356; // diagonal extent of edgeSoft
+                    float fade = 1.0 - smoothstep(0.0, fillRadius, cornerDist);
+                    if (fade > 1e-3) return fade;
+                }
             }
+            return 0.0;
         }
-        return 0.0;
+    
+        // Cell is occupied — apply optional edge softening near exposed borders.
+        if (puffiness > 1e-4) {
+            float bN, bE, bS, bW;
+            cloudBorders(skyUBO, tc, bN, bE, bS, bW);
+            float edgeDist = cloudEdgeDistance01(inCell, bN, bE, bS, bW);
+
+            float fade = smoothstep(0.0, edgeSoft, edgeDist);
+            if (fade <= 1e-3) return 0.0;
+            return fade;
+        }
+        
+        return 1.0;
+    } else {
+        // SEUS风格：使用原有的噪声密度
+        // Convert to world position for SEUS density
+        vec3 worldPos = vec3(worldUBO.cameraPos.xyz) + pCam;
+        float sizeScale = CLOUD_SIZE_SCALE_BASE * getCloudSizeScaleMultiplier(skyUBO);
+        // worldPos *= sizeScale; // 改为在噪声输出后缩放密度值，避免变形
+        // Use SEUS cloud density (level=3, lunacrity=0.23)
+        float density = CloudDensity(worldPos, 3, 0.23, skyUBO.rainGradient, vec3(worldUBO.cameraPos.xyz), worldUBO.gameTime, skyUBO);
+        return density;
     }
-
-    // Cell is occupied — apply optional edge softening near exposed borders.
-    if (puffiness > 1e-4) {
-        float bN, bE, bS, bW;
-        cloudBorders(skyUBO, tc, bN, bE, bS, bW);
-        float edgeDist = cloudEdgeDistance01(inCell, bN, bE, bS, bW);
-
-        float fade = smoothstep(0.0, edgeSoft, edgeDist);
-        if (fade <= 1e-3) return 0.0;
-        return fade;
-    }
-
-    return 1.0;
 }
 
 float cloudDensityAtVisual(vec3 pCam, WorldUBO worldUBO, SkyUBO skyUBO) {
-    float base = cloudDensityAt(pCam, worldUBO, skyUBO);
-    if (base <= 0.0) return 0.0;
-
-    // detailStrength = 0 (Fast mode): flat uniform slab, no FBM modulation.
-    float detailStrength = clamp(skyUBO.cloudShape.z, 0.0, 3.0);
-    if (detailStrength <= 1e-5) return base;
-
-    float detailScale = max(skyUBO.cloudShape.y, 1e-3);
-
-    // World-anchored 3D value FBM. cloudFbm3 (3 octaves) returns ~[0, 0.875].
-    dvec3 pWorld = worldUBO.cameraPos.xyz + dvec3(pCam);
-    vec3 pw = vec3(mod(pWorld, 4096.0));
-
-    // At detailScale=1: base wavelength ~24 blocks. Higher detailScale = finer blobs.
-    vec3 noiseCoord = pw * (detailScale / 24.0);
-    float n = cloudFbm3(noiseCoord);
-
-    // Symmetric deviation around 0.5: denser centers, lighter pockets — no holes.
-    // detailStrength=1.0 → modD in [0.6, 1.4]. detailStrength=2.0 → [0.2, 1.8].
-    float deviation = (n - 0.5) * 2.0;
-    float modD = clamp(1.0 + deviation * 0.4 * detailStrength, 0.2, 1.8);
-
-    // Altitude fade: suppress noise at top/bottom 15% of slab for smooth silhouette.
-    float thickness = skyUBO.envCloud.y;
-    float baseYRel = skyUBO.envCloud.x - float(worldUBO.cameraPos.y);
-    float h = clamp((pCam.y - baseYRel) / max(thickness, 1e-3), 0.0, 1.0);
-    float altFade = smoothstep(0.0, 0.15, h) * (1.0 - smoothstep(0.85, 1.0, h));
-    modD = mix(1.0, modD, altFade);
-
-    return base * modD;
+    // Simply return SEUS density (already computed in cloudDensityAt)
+    return cloudDensityAt(pCam, worldUBO, skyUBO);
 }
 
+
+// SEUS PTGI inspired cumulus cloud density
+float cloudDensityCumulus(vec3 worldPos, float cloudDist, float wetness, SkyUBO skyUBO) {
+    // Transform world position similar to SEUS
+    vec3 pos = worldPos;
+    pos /= cloudDist * 0.00015 + 1.0;
+    float cloudScale = CLOUD_SCALE_BASE * getCloudScaleMultiplier(skyUBO);
+    pos *= cloudScale;
+    float sizeScale = CLOUD_SIZE_SCALE_BASE * getCloudSizeScaleMultiplier(skyUBO);
+
+    // FBM parameters
+    const int level = 3;
+    const float lunacrity = 0.23;
+    float n = 0.0;
+    float g = 1.0;
+    float w = 0.0;
+    vec3 noiseCoord = pos;
+    // Time animation omitted for simplicity
+    for (int i = 0; i < level; i++) {
+        n += cloudFbm3(noiseCoord) * g;
+        w += g;
+        noiseCoord *= 3.0;
+        g *= lunacrity;
+    }
+    n /= w;
+    n *= sizeScale; // 在噪声输出后缩放密度值以改变云大小，避免变形
+
+    n = n * 1.5 - 0.35;
+    n *= 1.0 - wetness * 0.4;
+    n += wetness * 0.6;
+    n = clamp(n, 0.0, 1.0);
+    return n;
+}
 
 vec3 cloudMainLightRadiance(SkyUBO skyUBO, out vec3 toLight) {
     vec3 sunDir = normalize(skyUBO.sunDirection);
@@ -385,65 +649,18 @@ float cloudTransmittance(vec3 ro, vec3 rd, float tMin, float tMax, WorldUBO worl
     float b = min(tMax, slabT1);
     if (b <= a) return 1.0;
 
-    // DDA traversal through the 12x12 cell grid in local cloud space.
-    vec3 p0 = ro + rd * a;
-    float x = p0.x + skyUBO.cloudWrap.x;
-    float z = p0.z + skyUBO.cloudWrap.y;
-
-    int cellX = int(floor(x / CLOUD_CELL_SIZE));
-    int cellZ = int(floor(z / CLOUD_CELL_SIZE));
-    if (abs(cellX) > CLOUD_TILE_HALF_EXTENT || abs(cellZ) > CLOUD_TILE_HALF_EXTENT) return 1.0;
-
-    int stepX = (rd.x > 0.0) ? 1 : -1;
-    int stepZ = (rd.z > 0.0) ? 1 : -1;
-
-    float invDx = (abs(rd.x) > 1e-6) ? (1.0 / rd.x) : 0.0;
-    float invDz = (abs(rd.z) > 1e-6) ? (1.0 / rd.z) : 0.0;
-
-    float nextBoundaryX = (float(cellX + (rd.x > 0.0 ? 1 : 0)) * CLOUD_CELL_SIZE);
-    float nextBoundaryZ = (float(cellZ + (rd.z > 0.0 ? 1 : 0)) * CLOUD_CELL_SIZE);
-
-    float tMaxX = (abs(rd.x) > 1e-6) ? (a + (nextBoundaryX - x) * invDx) : INF_DISTANCE;
-    float tMaxZ = (abs(rd.z) > 1e-6) ? (a + (nextBoundaryZ - z) * invDz) : INF_DISTANCE;
-    float tDeltaX = (abs(rd.x) > 1e-6) ? (CLOUD_CELL_SIZE / abs(rd.x)) : INF_DISTANCE;
-    float tDeltaZ = (abs(rd.z) > 1e-6) ? (CLOUD_CELL_SIZE / abs(rd.z)) : INF_DISTANCE;
-
+    // Simple ray marching with fixed step count
     float tauSum = 0.0;
-    float t = a;
-    int maxIter = 256;
-    for (int iter = 0; iter < maxIter && t < b && tauSum < 20.0; iter++) {
-        float tNext = min(b, min(tMaxX, tMaxZ));
-        float ds = tNext - t;
-        if (ds <= 0.0) break;
-
-        // Evaluate a stable density at the segment midpoint.
-        float tm = t + 0.5 * ds;
-        vec3 pm = ro + rd * tm;
+    float stepSize = (b - a) / float(steps);
+    for (int i = 0; i < steps; ++i) {
+        float t = a + (float(i) + 0.5) * stepSize;
+        vec3 p = ro + rd * t;
         bool noiseAffects = skyUBO.cloudLighting.w > 0.5;
-        float d = noiseAffects ? cloudDensityAtVisual(pm, worldUBO, skyUBO) : cloudDensityAt(pm, worldUBO, skyUBO);
+        float d = noiseAffects ? cloudDensityAtVisual(p, worldUBO, skyUBO) : cloudDensityAt(p, worldUBO, skyUBO);
         if (d > 1e-4) {
-            tauSum += (sigmaT * d) * ds;
+            tauSum += (sigmaT * d) * stepSize;
         }
-
-        t = tNext;
-
-        bool stepBoth = abs(tMaxX - tMaxZ) < 1e-6;
-        if (stepBoth) {
-            tMaxX += tDeltaX;
-            tMaxZ += tDeltaZ;
-            cellX += stepX;
-            cellZ += stepZ;
-        } else if (tMaxX < tMaxZ) {
-            tMaxX += tDeltaX;
-            cellX += stepX;
-        } else {
-            tMaxZ += tDeltaZ;
-            cellZ += stepZ;
-        }
-
-        if (abs(cellX) > CLOUD_TILE_HALF_EXTENT || abs(cellZ) > CLOUD_TILE_HALF_EXTENT) break;
     }
-
     return exp(-tauSum);
 }
 
@@ -462,6 +679,29 @@ void cloudIntegrateSubSegment(vec3 ro, vec3 rd,
 
     float tm = tA + 0.5 * ds;
     vec3 pm = ro + rd * tm;
+    
+    if (skyUBO.cloudShape.w >= 0.5) {
+        vec3 lightVector = normalize(skyUBO.sunDirection);
+        vec3 skyColor = skyAmbient;
+        vec3 atmosphere = skyColor;
+        bool detail = skyUBO.cloudLighting.w > 0.5;
+        vec3 sunColor = cloudMainLightRadiance(skyUBO, lightVector);
+        sunColor *= 0.05;
+        vec4 cloudCol = CloudColorSEUS(pm, rd, lightVector, sunColor, skyColor, atmosphere, detail,
+                                       vec3(worldUBO.cameraPos.xyz), float(worldUBO.gameTime), skyUBO);
+        
+        vec3 color = cloudCol.rgb;
+        float alpha = cloudCol.a;
+        
+        alpha *= cloudDistanceFade(pm, skyUBO);
+        if (alpha <= 1e-4) return;
+        
+        float stepTransmittance = exp(-alpha * ds * 1.6);  
+        Lacc += Tr * color * (1.0 - stepTransmittance);
+        Tr *= stepTransmittance;
+        return; 
+    }
+    
     float u = clamp((tm - runStart) / max(runLen, 1e-6), 0.0, 1.0);
     float tauL = mix(tau0, tau1, u);
 
@@ -473,8 +713,6 @@ void cloudIntegrateSubSegment(vec3 ro, vec3 rd,
     float stepT = exp(-ext * ds);
 
     // Use midpoint transmittance for the in-step multiple-scattering heuristic.
-    // Using the step-entry Tr creates visible step bands at close range because
-    // the phase / lighting boost changes discontinuously from slice to slice.
     float TrMid = Tr * exp(-ext * ds * 0.5);
     float ms = 1.0 - pow(max(TrMid, 1e-6), 0.25);
     float phase = mix(phaseSS, phaseISO, ms);
@@ -618,7 +856,6 @@ CloudSegmentResult integrateCloudSegment(vec3 ro, vec3 rd, float tMin, float tMa
     float b = min(tMax, slabT1);
     if (b <= a) return o;
 
-
     vec3 toLight;
     vec3 lightRadiance = cloudMainLightRadiance(skyUBO, toLight);
 
@@ -637,16 +874,12 @@ CloudSegmentResult integrateCloudSegment(vec3 ro, vec3 rd, float tMin, float tMa
     float brightness = clamp(skyUBO.envCloud.w, 0.0, 3.0);
 
     // Map brightness to a higher effective scattering albedo so 100% reads "white".
-    // (Brightness is a creative control, not physically strict.)
     float albedo = clamp(0.70 + 0.30 * brightness, 0.0, 0.995);
     float sigmaS = sigmaT * albedo;
 
     // Decide whether we can use an analytic constant-density slab integration.
-    // If any shape/detail modulation is enabled, fall back to stepped integration.
     float puffiness = clamp(skyUBO.cloudShape.x, 0.0, 2.0);
     float detailStrength = clamp(skyUBO.cloudShape.z, 0.0, 3.0);
-    // Analytic (flat slab) only when detailStrength == 0 (Fast mode).
-    // Any non-zero detailStrength (Fancy mode) uses stepped 3D FBM integration.
     bool analyticMode = (puffiness <= 1e-4) && (detailStrength <= 1e-5);
 
     // DDA traversal through the 12x12 cell grid in local cloud space.
@@ -675,13 +908,9 @@ CloudSegmentResult integrateCloudSegment(vec3 ro, vec3 rd, float tMin, float tMa
     float Tr = 1.0;
     float t = a;
 
-    // Group adjacent occupied cells into contiguous ray intervals.
-    // This prevents visible "cell blocks" when multiple clouds are directly adjacent.
     bool inRun = false;
     float runStart = a;
     float runEnd = a;
-
-    // Integrate a contiguous occupied run.
 
     int maxIter = 256;
     for (int iter = 0; iter < maxIter && t < b && Tr > 1e-4; iter++) {

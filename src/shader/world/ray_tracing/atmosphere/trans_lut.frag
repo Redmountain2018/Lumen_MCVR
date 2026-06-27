@@ -26,6 +26,22 @@ float densityExp(float h, float H) {
     return exp(-max(h, 0.0) / H);
 }
 
+float densityExpImproved(float h, float H) {
+    // Variable scale height: increases with altitude
+    float H_eff = H * (1.0 + h / 100000.0);
+    float density = exp(-max(h, 0.0) / H_eff);
+    // Extra attenuation in upper atmosphere to simulate transition to space
+    float extra = exp(-max(h - 50000.0, 0.0) / 50000.0);
+    return density * extra;
+}
+
+float ozoneAbsorption(float h) {
+    // Ozone layer centered at 25 km, Gaussian profile
+    float peakHeight = 25000.0;
+    float width = 10000.0;
+    return 0.1 * exp(-pow((h - peakHeight) / width, 2.0));
+}
+
 void main() {
     float mu = texCoord.x * 2.0 - 1.0;               // [-1,1]
     float r = mix(skyUBO.Rg, skyUBO.Rt, texCoord.y); // [Rg,Rt]
@@ -51,10 +67,14 @@ void main() {
         float rr = length(x);
         float h = rr - skyUBO.Rg;
 
-        float dR = densityExp(h, skyUBO.Hr);
-        float dM = densityExp(h, skyUBO.Hm);
+        float dR = densityExpImproved(h, skyUBO.Hr);
+        float dM = densityExpImproved(h, skyUBO.Hm);
+        float ozone = ozoneAbsorption(h);
 
-        vec3 sigmaT = skyUBO.betaR * dR + skyUBO.betaM * dM;
+        vec3 sigmaS_R = skyUBO.betaR * dR;
+        vec3 sigmaS_M = skyUBO.betaM * dM;
+        vec3 sigmaAbs = vec3(ozone * 0.1); // absorption coefficient, same for RGB
+        vec3 sigmaT = sigmaS_R + sigmaS_M + sigmaAbs;
         opticalDepth += sigmaT * dt;
     }
 

@@ -372,8 +372,8 @@ void Buffers::setAndUploadSkyUniformBuffer(vk::Data::SkyUBO &ubo) {
     auto vma = framework->vma();
     auto device = framework->device();
 
-    ubo.Rg = 6360000.0;
-    ubo.Rt = 6460000.0;
+    ubo.Rg = 6371000.0;
+    ubo.Rt = 6971000.0;
     ubo.Hr = 8000.0;
     ubo.Hm = 1200.0;
     ubo.mieG = 0.80;
