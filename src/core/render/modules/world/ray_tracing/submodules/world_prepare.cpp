@@ -143,10 +143,10 @@ void WorldPrepareContext::render() {
 
     std::unique_lock<std::recursive_mutex> lock(chunks->mutex());
 
-    if (chunks->chunkBuildScheduler() != nullptr) {
-        chunks->chunkBuildScheduler()->tryCheckBatchesFinish();
-        chunks->chunkBuildScheduler()->tryScheduleBatches(
-            Renderer::instance().world()->chunks()->chunkBuildScheduler()->chunkBuildingBatchSize());
+    auto scheduler = chunks->chunkBuildScheduler();
+    if (scheduler != nullptr) {
+        scheduler->tryCheckBatchesFinish();
+        scheduler->tryScheduleBatches(scheduler->chunkBuildingBatchSize());
     }
 
     if (chunks->importantBLASBuilders().size() > 0) {
@@ -202,10 +202,16 @@ void WorldPrepareContext::render() {
                 previousEntityRenderDataBatches.emplace();
 
             auto worldUniformBuffer = Renderer::instance().buffers()->worldUniformBuffer();
-            auto ubo = static_cast<vk::Data::WorldUBO *>(worldUniformBuffer->mappedPtr());
+            // worldUniformBuffer can be nullptr if per-frame buffer not yet allocated
+            auto ubo = worldUniformBuffer
+                           ? static_cast<vk::Data::WorldUBO *>(worldUniformBuffer->mappedPtr())
+                           : nullptr;
 
             auto &entities1 = entityBatch->entities;
             for (int i = 0; i < entities1.size(); i++) {
+                if (entities1[i] == nullptr) continue;
+                if (entities1[i]->blas == nullptr) continue;
+
                 VkGeometryInstanceFlagsKHR flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
                 // VkGeometryInstanceFlagsKHR flags = 0;
                 VkTransformMatrixKHR transform;
@@ -248,12 +254,20 @@ void WorldPrepareContext::render() {
                 }
 
                 geometryTypes.push_back(World::GeometryTypes::SHADOW);
-                geometryTypes.insert(geometryTypes.end(), entities1[i]->geometryTypes->begin(),
-                                     entities1[i]->geometryTypes->end());
+                if (entities1[i]->geometryTypes != nullptr) {
+                    geometryTypes.insert(geometryTypes.end(), entities1[i]->geometryTypes->begin(),
+                                         entities1[i]->geometryTypes->end());
+                }
 
                 for (int j = 0; j < entities1[i]->geometryCount; j++) {
-                    vertexBufferAddrs.push_back((*entities1[i]->vertexBufferAddresses)[j]);
-                    indexBufferAddrs.push_back((*entities1[i]->indexBufferAddresses)[j]);
+                    if (entities1[i]->vertexBufferAddresses != nullptr &&
+                        j < static_cast<int>(entities1[i]->vertexBufferAddresses->size())) {
+                        vertexBufferAddrs.push_back((*entities1[i]->vertexBufferAddresses)[j]);
+                    }
+                    if (entities1[i]->indexBufferAddresses != nullptr &&
+                        j < static_cast<int>(entities1[i]->indexBufferAddresses->size())) {
+                        indexBufferAddrs.push_back((*entities1[i]->indexBufferAddresses)[j]);
+                    }
                 }
 
                 // store current render data
@@ -270,16 +284,35 @@ void WorldPrepareContext::render() {
                     auto iter = previousEntityRenderDataBatch.find(entities1[i]->hashCode);
                     if (iter != previousEntityRenderDataBatch.end()) {
                         auto &previousEntityRenderData = (*iter).second.first;
-                        if (previousEntityRenderData->geometryCount == entities1[i]->geometryCount) {
+                        if (previousEntityRenderData != nullptr &&
+                            previousEntityRenderData->geometryCount == entities1[i]->geometryCount) {
                             for (int j = 0; j < entities1[i]->geometryCount; j++) {
-                                if ((*previousEntityRenderData->vertices)[j].size() ==
+                                bool prevVerticesValid = previousEntityRenderData->vertices != nullptr &&
+                                    j < static_cast<int>(previousEntityRenderData->vertices->size());
+                                bool currVerticesValid = entities1[i]->vertices != nullptr &&
+                                    j < static_cast<int>(entities1[i]->vertices->size());
+                                bool prevIndicesValid = previousEntityRenderData->indices != nullptr &&
+                                    j < static_cast<int>(previousEntityRenderData->indices->size());
+                                bool currIndicesValid = entities1[i]->indices != nullptr &&
+                                    j < static_cast<int>(entities1[i]->indices->size());
+    
+                                if (prevVerticesValid && currVerticesValid && prevIndicesValid && currIndicesValid &&
+                                    (*previousEntityRenderData->vertices)[j].size() ==
                                         (*entities1[i]->vertices)[j].size() &&
                                     (*previousEntityRenderData->indices)[j].size() ==
                                         (*entities1[i]->indices)[j].size()) {
-                                    lastVertexBufferAddrs.push_back(
-                                        (*previousEntityRenderData->vertexBufferAddresses)[j]);
-                                    lastIndexBufferAddrs.push_back(
-                                        (*previousEntityRenderData->indexBufferAddresses)[j]);
+                                    if (previousEntityRenderData->vertexBufferAddresses != nullptr &&
+                                        j < static_cast<int>(previousEntityRenderData->vertexBufferAddresses->size()) &&
+                                        previousEntityRenderData->indexBufferAddresses != nullptr &&
+                                        j < static_cast<int>(previousEntityRenderData->indexBufferAddresses->size())) {
+                                        lastVertexBufferAddrs.push_back(
+                                            (*previousEntityRenderData->vertexBufferAddresses)[j]);
+                                        lastIndexBufferAddrs.push_back(
+                                            (*previousEntityRenderData->indexBufferAddresses)[j]);
+                                    } else {
+                                        lastVertexBufferAddrs.push_back(0);
+                                        lastIndexBufferAddrs.push_back(0);
+                                    }
                                 } else {
                                     lastVertexBufferAddrs.push_back(0);
                                     lastIndexBufferAddrs.push_back(0);
@@ -336,11 +369,21 @@ void WorldPrepareContext::render() {
             instanceBuilder.defineInstance(transform, blasIndex, 0x01, chunkInstanceOffset, 0, chunk1->blas);
 
             geometryTypes.push_back(World::GeometryTypes::SHADOW);
-            geometryTypes.insert(geometryTypes.end(), chunk1->geometryTypes->begin(), chunk1->geometryTypes->end());
+            if (chunk1->geometryTypes != nullptr) {
+                geometryTypes.insert(geometryTypes.end(), chunk1->geometryTypes->begin(), chunk1->geometryTypes->end());
+            }
 
             for (int j = 0; j < chunk1->geometryCount; j++) {
-                vertexBufferAddrs.push_back((*chunk1->vertexBuffers)[j]->bufferAddress());
-                indexBufferAddrs.push_back((*chunk1->indexBuffers)[j]->bufferAddress());
+                if (chunk1->vertexBuffers != nullptr &&
+                    j < static_cast<int>(chunk1->vertexBuffers->size()) &&
+                    (*chunk1->vertexBuffers)[j] != nullptr) {
+                    vertexBufferAddrs.push_back((*chunk1->vertexBuffers)[j]->bufferAddress());
+                }
+                if (chunk1->indexBuffers != nullptr &&
+                    j < static_cast<int>(chunk1->indexBuffers->size()) &&
+                    (*chunk1->indexBuffers)[j] != nullptr) {
+                    indexBufferAddrs.push_back((*chunk1->indexBuffers)[j]->bufferAddress());
+                }
                 lastVertexBufferAddrs.push_back(0);
                 lastIndexBufferAddrs.push_back(0);
             }

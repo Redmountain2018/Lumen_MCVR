@@ -9,7 +9,7 @@ extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_world_ChunkProx
     Renderer::instance().world()->chunks()->reset(chunkNum);
 }
 
-extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_world_ChunkProxy_rebuildSingle(JNIEnv *,
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_world_ChunkProxy_rebuildSingle(JNIEnv *env,
                                                                                      jclass,
                                                                                      jint originX,
                                                                                      jint originY,
@@ -27,28 +27,32 @@ extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_world_ChunkProx
                                                                                      jint occupancySizeY,
                                                                                      jint occupancySizeZ,
                                                                                      jboolean important) {
-
-    auto world = Renderer::instance().world();
-    if (world == nullptr) return;
-    world->chunks()->queueChunkBuild(ChunkBuildTask{
-        .x = originX,
-        .y = originY,
-        .z = originZ,
-        .id = index,
-        .geometryCount = geometryCount,
-        .geometryTypes = reinterpret_cast<int *>(geometryTypes),
-        .geometryTextures = reinterpret_cast<int *>(geometryTextures),
-        .vertexFormats = reinterpret_cast<int *>(vertexFormats),
-        .vertexCounts = reinterpret_cast<int *>(vertexCounts),
-        .vertices = reinterpret_cast<vk::VertexFormat::PBRTriangle **>(vertexAddrs),
-        .isImportant = static_cast<bool>(important),
-        .waterOccupancy = reinterpret_cast<uint32_t *>(waterOccupancy),
-        .solidOccupancy = reinterpret_cast<uint32_t *>(solidOccupancy),
-        .occupancySizeX = occupancySizeX,
-        .occupancySizeY = occupancySizeY,
-        .occupancySizeZ = occupancySizeZ,
-
-    });
+    try {
+        auto world = Renderer::instance().world();
+        if (world == nullptr) return;
+        world->chunks()->queueChunkBuild(ChunkBuildTask{
+            .x = originX,
+            .y = originY,
+            .z = originZ,
+            .id = index,
+            .geometryCount = geometryCount,
+            .geometryTypes = reinterpret_cast<int *>(geometryTypes),
+            .geometryTextures = reinterpret_cast<int *>(geometryTextures),
+            .vertexFormats = reinterpret_cast<int *>(vertexFormats),
+            .vertexCounts = reinterpret_cast<int *>(vertexCounts),
+            .vertices = reinterpret_cast<vk::VertexFormat::PBRTriangle **>(vertexAddrs),
+            .isImportant = static_cast<bool>(important),
+            .waterOccupancy = reinterpret_cast<uint32_t *>(waterOccupancy),
+            .solidOccupancy = reinterpret_cast<uint32_t *>(solidOccupancy),
+            .occupancySizeX = occupancySizeX,
+            .occupancySizeY = occupancySizeY,
+            .occupancySizeZ = occupancySizeZ,
+        });
+    } catch (const std::exception &e) {
+        std::cerr << "[ChunkProxy] rebuildSingle exception: " << e.what() << std::endl;
+    } catch (...) {
+        std::cerr << "[ChunkProxy] rebuildSingle unknown exception" << std::endl;
+    }
 }
 
 extern "C" JNIEXPORT jboolean JNICALL Java_com_radiance_client_proxy_world_ChunkProxy_isChunkReady(JNIEnv *, jclass, jlong id) {

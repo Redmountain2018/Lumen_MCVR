@@ -285,6 +285,12 @@ void Framework::acquireContext() {
         exit(EXIT_FAILURE);
     }
 
+    if (imageIndex >= contexts_.size() || contexts_[imageIndex] == nullptr) {
+        std::cerr << "acquireContext: invalid imageIndex " << imageIndex << " (contexts size " << contexts_.size() << ")" << std::endl;
+        recycleSemaphore(imageAcquiredSemaphore);
+        waitDeviceIdle();
+        exit(EXIT_FAILURE);
+    }
     std::shared_ptr<vk::Fence> fence = contexts_[imageIndex]->commandFinishedFence;
     result = vkWaitForFences(device_->vkDevice(), 1, &fence->vkFence(), true, UINT64_MAX);
     if (result != VK_SUCCESS) {
@@ -350,12 +356,15 @@ void Framework::submitCommand() {
     // PCL: simulation phase ends, render phase begins
     StreamlineContext::pclSetMarker(sl::PCLMarker::eSimulationEnd);
 
-    Renderer::instance().framework()->safeAcquireCurrentContext(); // ensure context is non nullptr
+    // Defensive: ensure framework and context are valid before proceeding
+    auto context = safeAcquireCurrentContext();
+    if (context == nullptr) return;
 
     Renderer::instance().textures()->performQueuedUpload();
     Renderer::instance().buffers()->performQueuedUpload();
     Renderer::instance().buffers()->buildAndUploadOverlayUniformBuffer();
 
+    if (pipeline_ == nullptr) return;
     auto pipelineContext = pipeline_->acquirePipelineContext(currentContext_);
     if (Renderer::instance().world()->shouldRender()) pipelineContext->worldPipelineContext->render();
     pipelineContext->uiModuleContext->end();
@@ -398,6 +407,10 @@ void Framework::submitCommand() {
 
 void Framework::present() {
     if (!running_) return;
+    if (currentContext_ == nullptr) {
+        safeAcquireCurrentContext();
+        if (currentContext_ == nullptr) return;
+    }
 
     VkPresentInfoKHR presentInfo = {};
     presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -413,8 +426,9 @@ void Framework::present() {
     VkResult result = vkQueuePresentKHR(device_->mainVkQueue(), &presentInfo);
     StreamlineContext::pclSetMarker(sl::PCLMarker::ePresentEnd);
 
+    bool needRecreate = pipeline_ != nullptr && pipeline_->needRecreate;
     if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || vk::Window::framebufferResized ||
-        Renderer::options.needRecreate || pipeline_->needRecreate) {
+        Renderer::options.needRecreate || needRecreate) {
         recreate();
         return;
     } else if (result != VK_SUCCESS) {
@@ -431,7 +445,7 @@ void Framework::recreate() {
 
     Renderer::options.needRecreate = false;
     vk::Window::framebufferResized = false;
-    pipeline_->needRecreate = false;
+    if (pipeline_ != nullptr) pipeline_->needRecreate = false;
 
     waitRenderQueueIdle();
 
@@ -473,7 +487,11 @@ void Framework::recreate() {
 
     for (int i = 0; i < size; i++) { contexts_.push_back(FrameworkContext::create(shared_from_this(), i)); }
 
-    pipeline_->recreate(shared_from_this());
+    if (pipeline_ != nullptr) {
+        pipeline_->recreate(shared_from_this());
+    } else {
+        pipeline_ = Pipeline::create(shared_from_this());
+    }
 
     Renderer::instance().textures()->bindAllTextures();
 }
@@ -491,7 +509,7 @@ void Framework::waitBackendQueueIdle() {
 }
 
 void Framework::close() {
-    if (running_) { pipeline_->close(); }
+    if (running_ && pipeline_ != nullptr) { pipeline_->close(); }
     running_ = false;
     // Shutdown Streamline before Vulkan device destruction
     StreamlineContext::shutdown();
@@ -872,10 +890,16 @@ std::vector<std::shared_ptr<FrameworkContext>> &Framework::contexts() {
 
 std::shared_ptr<FrameworkContext> Framework::safeAcquireCurrentContext() {
     std::unique_lock<std::recursive_mutex> lck(recreateMtx_);
+    if (contexts_.empty()) return nullptr;
     // for continous window operation, currentContext_ will always be reset, busy waiting
+    int attempts = 0;
     while (currentContext_ == nullptr) {
         // ensure currentContext_ is not nullptr after seapchain recreation
         acquireContext();
+        if (++attempts > 100) {
+            std::cerr << "[Framework] safeAcquireCurrentContext: giving up after 100 attempts" << std::endl;
+            return nullptr;
+        }
     }
     return currentContext_;
 }

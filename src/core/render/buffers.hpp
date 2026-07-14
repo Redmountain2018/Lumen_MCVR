@@ -7,6 +7,7 @@
 #include "core/vulkan/all_core_vulkan.hpp"
 
 #include <map>
+#include <mutex>
 #include <set>
 #include <vector>
 
@@ -74,4 +75,5 @@ class Buffers : public SharedObject<Buffers> {
     std::shared_ptr<std::vector<std::shared_ptr<vk::DeviceLocalBuffer>>> importantIndexVertexBuffer_;
 
     bool useJitter_ = true;
+    std::recursive_mutex mtx_;
 };

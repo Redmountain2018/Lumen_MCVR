@@ -361,35 +361,37 @@ void ChunkBuildData::build(bool allowMicromapBake, bool skipOMM) {
         }
     }
 
-    blasBuilder = vk::BLASBuilder::create();
-    auto blasGeometryBuilder = blasBuilder->beginGeometries();
-    for (int i = 0; i < geometryCount; i++) {
-        bool isOpaque = geometryTypes[i] == World::WORLD_SOLID;
-        if (ommIndexBuffers[i] != nullptr) {
-            uint32_t numTriangles = static_cast<uint32_t>(indices[i].size()) / 3;
-            if (ommGeometryData[i].hasMicromap) {
-                blasGeometryBuilder->defineTriangleGeomrtryWithMicromap<vk::VertexFormat::PBRTriangle>(
-                    vertexBuffers[i], vertices[i].size(), indexBuffers[i], indices[i].size(),
-                    isOpaque, ommIndexBuffers[i]->bufferAddress(), numTriangles,
-                    ommGeometryData[i].micromap,
-                    ommGeometryData[i].indexHistogram.data(),
-                    static_cast<uint32_t>(ommGeometryData[i].indexHistogram.size()));
+    if (geometryCount > 0) {
+        blasBuilder = vk::BLASBuilder::create();
+        auto blasGeometryBuilder = blasBuilder->beginGeometries();
+        for (int i = 0; i < geometryCount; i++) {
+            bool isOpaque = geometryTypes[i] == World::WORLD_SOLID;
+            if (ommIndexBuffers[i] != nullptr) {
+                uint32_t numTriangles = static_cast<uint32_t>(indices[i].size()) / 3;
+                if (ommGeometryData[i].hasMicromap) {
+                    blasGeometryBuilder->defineTriangleGeomrtryWithMicromap<vk::VertexFormat::PBRTriangle>(
+                        vertexBuffers[i], vertices[i].size(), indexBuffers[i], indices[i].size(),
+                        isOpaque, ommIndexBuffers[i]->bufferAddress(), numTriangles,
+                        ommGeometryData[i].micromap,
+                        ommGeometryData[i].indexHistogram.data(),
+                        static_cast<uint32_t>(ommGeometryData[i].indexHistogram.size()));
+                } else {
+                    blasGeometryBuilder->defineTriangleGeomrtry<vk::VertexFormat::PBRTriangle>(
+                        vertexBuffers[i], vertices[i].size(), indexBuffers[i], indices[i].size(),
+                        isOpaque, ommIndexBuffers[i]->bufferAddress(), numTriangles);
+                }
             } else {
                 blasGeometryBuilder->defineTriangleGeomrtry<vk::VertexFormat::PBRTriangle>(
                     vertexBuffers[i], vertices[i].size(), indexBuffers[i], indices[i].size(),
-                    isOpaque, ommIndexBuffers[i]->bufferAddress(), numTriangles);
+                    isOpaque);
             }
-        } else {
-            blasGeometryBuilder->defineTriangleGeomrtry<vk::VertexFormat::PBRTriangle>(
-                vertexBuffers[i], vertices[i].size(), indexBuffers[i], indices[i].size(),
-                isOpaque);
         }
+        blasGeometryBuilder->endGeometries();
+        blas = blasBuilder->defineBuildProperty(VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR)
+                   ->querySizeInfo(device)
+                   ->allocateBuffers(physicalDevice, device, vma)
+                   ->build(device);
     }
-    blasGeometryBuilder->endGeometries();
-    blas = blasBuilder->defineBuildProperty(VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR)
-               ->querySizeInfo(device)
-               ->allocateBuffers(physicalDevice, device, vma)
-               ->build(device);
 
     if (!waterVertices.empty()) {
         waterBlasBuilder = vk::BLASBuilder::create();
@@ -461,27 +463,32 @@ ChunkBuildDataBatch::ChunkBuildDataBatch(uint32_t maxBatchSize,
     std::copy(queuedIndexSet.begin(), queuedIndexSet.end(), std::back_inserter(queuedIndices));
     auto currentTime = std::chrono::steady_clock::now();
     std::sort(queuedIndices.begin(), queuedIndices.end(), [&](int64_t a, int64_t b) -> bool {
+        bool aValid = a >= 0 && a < (int64_t)chunks.size() && chunks[a] != nullptr;
+        bool bValid = b >= 0 && b < (int64_t)chunks.size() && chunks[b] != nullptr;
+        if (!aValid && !bValid) return a < b;
+        if (!aValid) return false;
+        if (!bValid) return true;
         return chunks[a]->buildFactor(currentTime, cameraPos) > chunks[b]->buildFactor(currentTime, cameraPos);
     });
 
-    auto batchStart = std::chrono::steady_clock::now();
-    static constexpr auto TIME_BUDGET = std::chrono::microseconds(4000); // 4ms
-
     for (int i = 0; i < std::min((size_t)maxBatchSize, queuedIndices.size()); i++) {
-        // After the first chunk, enforce time budget to cap frame time spikes from OMM baking
-        if (i > 0) {
-            auto elapsed = std::chrono::steady_clock::now() - batchStart;
-            if (elapsed > TIME_BUDGET) break;
-        }
+        auto idx = queuedIndices[i];
+        if (idx < 0 || idx >= (int64_t)chunkBuildDatas.size()) continue;
 
-        auto iter = queuedIndexSet.find(queuedIndices[i]);
-        if (iter != queuedIndexSet.end()) { queuedIndexSet.erase(iter); }
+        auto iter = queuedIndexSet.find(idx);
+        if (iter == queuedIndexSet.end()) continue;
 
-        auto data = chunkBuildDatas[queuedIndices[i]];
-        data->build();
+        auto data = chunkBuildDatas[idx];
+        if (data == nullptr) continue;
+
+        queuedIndexSet.erase(iter);
+        chunkBuildDatas[idx] = nullptr;
         batchData.push_back(data);
     }
 }
+
+ChunkBuildDataBatch::ChunkBuildDataBatch(std::vector<std::shared_ptr<ChunkBuildData>> &&batchData)
+    : batchData(std::move(batchData)) {}
 
 ChunkBuildScheduler::ChunkBuildScheduler(std::set<int64_t> &queuedIndex,
                                          std::vector<std::shared_ptr<Chunk1>> &chunks,
@@ -517,14 +524,19 @@ void ChunkBuildScheduler::tryCheckBatchesFinish() {
             freeFences_.push(*iterFence);
 
             for (auto chunkBuildData : (*iterBatch)->batchData) {
-                chunks_[chunkBuildData->id]->enqueue(chunkBuildData);
+                int64_t id = chunkBuildData->id;
+                if (id >= 0 && id < (int64_t)chunks_.size() && chunks_[id] != nullptr) {
+                    chunks_[id]->enqueue(chunkBuildData);
+                }
 
-                ChunkPackedData data = {
-                    .geometryCount = chunkBuildData->geometryCount,
-                };
+                if (chunkPackedData_ != nullptr) {
+                    ChunkPackedData data = {
+                        .geometryCount = chunkBuildData->geometryCount,
+                    };
 
-                chunkPackedData_->uploadToBuffer(&data, sizeof(ChunkPackedData),
-                                                 chunkBuildData->id * sizeof(ChunkPackedData));
+                    chunkPackedData_->uploadToBuffer(&data, sizeof(ChunkPackedData),
+                                                     id * sizeof(ChunkPackedData));
+                }
             }
 
             iterFence = buildingFences_.erase(iterFence);
@@ -546,14 +558,19 @@ void ChunkBuildScheduler::waitAllBatchesFinish() {
             freeFences_.push(*iterFence);
 
             for (auto chunkBuildData : (*iterBatch)->batchData) {
-                chunks_[chunkBuildData->id]->enqueue(chunkBuildData);
+                int64_t id = chunkBuildData->id;
+                if (id >= 0 && id < (int64_t)chunks_.size() && chunks_[id] != nullptr) {
+                    chunks_[id]->enqueue(chunkBuildData);
+                }
 
-                ChunkPackedData data = {
-                    .geometryCount = chunkBuildData->geometryCount,
-                };
+                if (chunkPackedData_ != nullptr) {
+                    ChunkPackedData data = {
+                        .geometryCount = chunkBuildData->geometryCount,
+                    };
 
-                chunkPackedData_->uploadToBuffer(&data, sizeof(ChunkPackedData),
-                                                 chunkBuildData->id * sizeof(ChunkPackedData));
+                    chunkPackedData_->uploadToBuffer(&data, sizeof(ChunkPackedData),
+                                                     id * sizeof(ChunkPackedData));
+                }
             }
 
             iterFence = buildingFences_.erase(iterFence);
@@ -564,239 +581,252 @@ void ChunkBuildScheduler::waitAllBatchesFinish() {
 
 void ChunkBuildScheduler::tryScheduleBatches(uint32_t maxBatchSize) {
     if (!Renderer::instance().framework()->isRunning()) return;
-    std::unique_lock<std::recursive_mutex> lock(mutex_);
-    if (!freeFences_.empty() && !queuedIndex_.empty()) {
-        auto fence = freeFences_.front();
+
+    // Phase 1: collect queued chunks into a batch (under lock, fast path)
+    std::shared_ptr<ChunkBuildDataBatch> chunkBuildDataBatch;
+    std::shared_ptr<vk::Fence> fence;
+    {
+        std::unique_lock<std::recursive_mutex> lock(mutex_);
+        if (freeFences_.empty() || queuedIndex_.empty()) return;
+
+        fence = freeFences_.front();
+        freeFences_.pop();
 
         glm::vec3 cameraPos = Renderer::instance().world()->getCameraPos();
-        auto chunkBuildDataBatch =
+        chunkBuildDataBatch =
             ChunkBuildDataBatch::create(maxBatchSize, queuedIndex_, chunks_, chunkBuildDatas_, cameraPos);
+    }
+    // Lock released here — render thread can queue new chunks during build
 
-        auto framework = Renderer::instance().framework();
-        auto vma = framework->vma();
-        auto device = framework->device();
-        auto physicalDevice = Renderer::instance().framework()->physicalDevice();
-        auto secondaryQueueIndex = physicalDevice->secondaryQueueIndex();
+    if (chunkBuildDataBatch->batchData.empty()) {
+        std::unique_lock<std::recursive_mutex> lock(mutex_);
+        freeFences_.push(fence);
+        return;
+    }
 
-        auto worldAsyncBuffer = framework->worldAsyncCommandBuffer();
+    // Phase 2: build all chunks (CPU-heavy, no lock held)
+    for (auto &data : chunkBuildDataBatch->batchData) {
+        data->build();
+    }
 
-        if (chunkBuildDataBatch->batchData.size() > 0) {
-            worldAsyncBuffer->begin();
+    // Phase 3: submit to GPU (re-acquire lock)
+    std::unique_lock<std::recursive_mutex> lock(mutex_);
 
-            // Upload all buffers (vertex, index, OMM)
-            for (auto chunkBuildData : chunkBuildDataBatch->batchData) {
-                for (int i = 0; i < chunkBuildData->geometryCount; i++) {
-                    chunkBuildData->vertexBuffers[i]->uploadToBuffer(worldAsyncBuffer);
-                    chunkBuildData->indexBuffers[i]->uploadToBuffer(worldAsyncBuffer);
-                    if (chunkBuildData->ommIndexBuffers[i] != nullptr) {
-                        chunkBuildData->ommIndexBuffers[i]->uploadToBuffer(worldAsyncBuffer);
-                    }
-                    // Upload Phase 2 OMM data buffers
-                    auto &gd = chunkBuildData->ommGeometryData[i];
-                    if (gd.hasMicromap) {
-                        gd.arrayBuffer->uploadToBuffer(worldAsyncBuffer);
-                        gd.descBuffer->uploadToBuffer(worldAsyncBuffer);
-                    }
-                }
-                
-                for (int i = 0; i < chunkBuildData->waterVertexBuffers.size(); i++) {
-                    chunkBuildData->waterVertexBuffers[i]->uploadToBuffer(worldAsyncBuffer);
-                    chunkBuildData->waterIndexBuffers[i]->uploadToBuffer(worldAsyncBuffer);
-                }
+    auto framework = Renderer::instance().framework();
+    auto device = framework->device();
+    auto physicalDevice = Renderer::instance().framework()->physicalDevice();
+    auto secondaryQueueIndex = physicalDevice->secondaryQueueIndex();
+    auto worldAsyncBuffer = framework->worldAsyncCommandBuffer();
 
-                if (chunkBuildData->waterOccupancyBuffer != nullptr) {
-                    chunkBuildData->waterOccupancyBuffer->uploadToBuffer(worldAsyncBuffer);
-                }
-                if (chunkBuildData->solidOccupancyBuffer != nullptr) {
-                    chunkBuildData->solidOccupancyBuffer->uploadToBuffer(worldAsyncBuffer);
-                }
+    worldAsyncBuffer->begin();
 
+    // Upload all buffers (vertex, index, OMM)
+    for (auto chunkBuildData : chunkBuildDataBatch->batchData) {
+        for (int i = 0; i < chunkBuildData->geometryCount; i++) {
+            chunkBuildData->vertexBuffers[i]->uploadToBuffer(worldAsyncBuffer);
+            chunkBuildData->indexBuffers[i]->uploadToBuffer(worldAsyncBuffer);
+            if (chunkBuildData->ommIndexBuffers[i] != nullptr) {
+                chunkBuildData->ommIndexBuffers[i]->uploadToBuffer(worldAsyncBuffer);
             }
-
-            // Barrier: transfer → micromap build + BLAS build
-            std::vector<vk::CommandBuffer::BufferMemoryBarrier> bufferBarriers;
-            for (auto chunkBuildData : chunkBuildDataBatch->batchData) {
-                for (int i = 0; i < chunkBuildData->geometryCount; i++) {
-                    VkPipelineStageFlags2 dstStage = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
-                    auto &gd = chunkBuildData->ommGeometryData[i];
-                    if (gd.hasMicromap) {
-                        dstStage |= VK_PIPELINE_STAGE_2_MICROMAP_BUILD_BIT_EXT;
-                    }
-
-                    bufferBarriers.push_back(vk::CommandBuffer::BufferMemoryBarrier{
-                        .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                        .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-                        .dstStageMask = dstStage,
-                        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-                        .srcQueueFamilyIndex = secondaryQueueIndex,
-                        .dstQueueFamilyIndex = secondaryQueueIndex,
-                        .buffer = chunkBuildData->vertexBuffers[i],
-                    });
-
-                    bufferBarriers.push_back(vk::CommandBuffer::BufferMemoryBarrier{
-                        .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                        .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-                        .dstStageMask = dstStage,
-                        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-                        .srcQueueFamilyIndex = secondaryQueueIndex,
-                        .dstQueueFamilyIndex = secondaryQueueIndex,
-                        .buffer = chunkBuildData->indexBuffers[i],
-                    });
-
-                    if (chunkBuildData->ommIndexBuffers[i] != nullptr) {
-                        bufferBarriers.push_back(vk::CommandBuffer::BufferMemoryBarrier{
-                            .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                            .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-                            .dstStageMask = dstStage,
-                            .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-                            .srcQueueFamilyIndex = secondaryQueueIndex,
-                            .dstQueueFamilyIndex = secondaryQueueIndex,
-                            .buffer = chunkBuildData->ommIndexBuffers[i],
-                        });
-                    }
-
-                    if (gd.hasMicromap) {
-                        bufferBarriers.push_back(vk::CommandBuffer::BufferMemoryBarrier{
-                            .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                            .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-                            .dstStageMask = VK_PIPELINE_STAGE_2_MICROMAP_BUILD_BIT_EXT,
-                            .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-                            .srcQueueFamilyIndex = secondaryQueueIndex,
-                            .dstQueueFamilyIndex = secondaryQueueIndex,
-                            .buffer = gd.arrayBuffer,
-                        });
-                        bufferBarriers.push_back(vk::CommandBuffer::BufferMemoryBarrier{
-                            .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                            .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-                            .dstStageMask = VK_PIPELINE_STAGE_2_MICROMAP_BUILD_BIT_EXT,
-                            .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-                            .srcQueueFamilyIndex = secondaryQueueIndex,
-                            .dstQueueFamilyIndex = secondaryQueueIndex,
-                            .buffer = gd.descBuffer,
-                        });
-                    }
-                }
-
-                for (int i = 0; i < chunkBuildData->waterVertexBuffers.size(); i++) {
-                    bufferBarriers.push_back(vk::CommandBuffer::BufferMemoryBarrier{
-                        .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                        .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-                        .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-                        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-                        .srcQueueFamilyIndex = secondaryQueueIndex,
-                        .dstQueueFamilyIndex = secondaryQueueIndex,
-                        .buffer = chunkBuildData->waterVertexBuffers[i],
-                    });
-
-                    bufferBarriers.push_back(vk::CommandBuffer::BufferMemoryBarrier{
-                        .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                        .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-                        .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-                        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-                        .srcQueueFamilyIndex = secondaryQueueIndex,
-                        .dstQueueFamilyIndex = secondaryQueueIndex,
-                        .buffer = chunkBuildData->waterIndexBuffers[i],
-                    });
-                }
-                if (chunkBuildData->waterOccupancyBuffer != nullptr) {
-                    bufferBarriers.push_back(vk::CommandBuffer::BufferMemoryBarrier{
-                        .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                        .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
-                        .dstStageMask = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
-                        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT,
-                        .srcQueueFamilyIndex = secondaryQueueIndex,
-                        .dstQueueFamilyIndex = secondaryQueueIndex,
-                        .buffer = chunkBuildData->waterOccupancyBuffer,
-                    });
-                }
-
-                if (chunkBuildData->solidOccupancyBuffer != nullptr) {
-                    bufferBarriers.push_back(vk::CommandBuffer::BufferMemoryBarrier{
-                        .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                        .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
-                        .dstStageMask = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
-                        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT,
-                        .srcQueueFamilyIndex = secondaryQueueIndex,
-                        .dstQueueFamilyIndex = secondaryQueueIndex,
-                        .buffer = chunkBuildData->solidOccupancyBuffer,
-                    });
-                }
-
+            auto &gd = chunkBuildData->ommGeometryData[i];
+            if (gd.hasMicromap) {
+                gd.arrayBuffer->uploadToBuffer(worldAsyncBuffer);
+                gd.descBuffer->uploadToBuffer(worldAsyncBuffer);
             }
-            worldAsyncBuffer->barriersBufferImage(bufferBarriers, {});
+        }
+        
+        for (int i = 0; i < chunkBuildData->waterVertexBuffers.size(); i++) {
+            chunkBuildData->waterVertexBuffers[i]->uploadToBuffer(worldAsyncBuffer);
+            chunkBuildData->waterIndexBuffers[i]->uploadToBuffer(worldAsyncBuffer);
+        }
 
-            // Build micromaps (before BLAS build)
-            bool anyMicromaps = false;
-            for (auto chunkBuildData : chunkBuildDataBatch->batchData) {
-                for (int i = 0; i < chunkBuildData->geometryCount; i++) {
-                    auto &gd = chunkBuildData->ommGeometryData[i];
-                    if (!gd.hasMicromap) continue;
-                    anyMicromaps = true;
-
-                    VkMicromapBuildInfoEXT buildInfo{};
-                    buildInfo.sType = VK_STRUCTURE_TYPE_MICROMAP_BUILD_INFO_EXT;
-                    buildInfo.type = VK_MICROMAP_TYPE_OPACITY_MICROMAP_EXT;
-                    buildInfo.flags = VK_BUILD_MICROMAP_PREFER_FAST_TRACE_BIT_EXT;
-                    buildInfo.mode = VK_BUILD_MICROMAP_MODE_BUILD_EXT;
-                    buildInfo.dstMicromap = gd.micromap;
-                    buildInfo.data.deviceAddress = gd.arrayBuffer->bufferAddress();
-                    buildInfo.triangleArray.deviceAddress = gd.descBuffer->bufferAddress();
-                    buildInfo.triangleArrayStride = sizeof(VkMicromapTriangleEXT);
-                    buildInfo.usageCountsCount = static_cast<uint32_t>(gd.descHistogram.size());
-                    buildInfo.pUsageCounts = gd.descHistogram.data();
-                    if (gd.micromapScratchBuffer) {
-                        buildInfo.scratchData.deviceAddress = gd.micromapScratchBuffer->bufferAddress();
-                    }
-
-                    vkCmdBuildMicromapsEXT(worldAsyncBuffer->vkCommandBuffer(), 1, &buildInfo);
-                }
-            }
-
-            // Barrier: micromap build → BLAS build
-            if (anyMicromaps) {
-                VkMemoryBarrier2 mmBarrier{};
-                mmBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-                mmBarrier.srcStageMask = VK_PIPELINE_STAGE_2_MICROMAP_BUILD_BIT_EXT;
-                mmBarrier.srcAccessMask = VK_ACCESS_2_MICROMAP_WRITE_BIT_EXT;
-                mmBarrier.dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
-                mmBarrier.dstAccessMask = VK_ACCESS_2_MICROMAP_READ_BIT_EXT;
-
-                VkDependencyInfo depInfo{};
-                depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-                depInfo.memoryBarrierCount = 1;
-                depInfo.pMemoryBarriers = &mmBarrier;
-                vkCmdPipelineBarrier2(worldAsyncBuffer->vkCommandBuffer(), &depInfo);
-            }
-
-            // Build BLAS
-            std::vector<std::shared_ptr<vk::BLASBuilder>> builders;
-            for (auto chunkBuildData : chunkBuildDataBatch->batchData) {
-                builders.push_back(chunkBuildData->blasBuilder);
-                if (chunkBuildData->waterBlasBuilder != nullptr) {
-                    builders.push_back(chunkBuildData->waterBlasBuilder);
-                }
-            }
-            vk::BLASBuilder::batchSubmit(builders, worldAsyncBuffer);
-
-            worldAsyncBuffer->end();
-
-            VkSubmitInfo vkSubmitInfo = {};
-            vkSubmitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-            vkSubmitInfo.waitSemaphoreCount = 0;
-            vkSubmitInfo.pWaitSemaphores = nullptr;
-            vkSubmitInfo.pWaitDstStageMask = nullptr;
-            vkSubmitInfo.commandBufferCount = 1;
-            vkSubmitInfo.pCommandBuffers = &worldAsyncBuffer->vkCommandBuffer();
-            vkSubmitInfo.signalSemaphoreCount = 0;
-            vkSubmitInfo.pSignalSemaphores = nullptr;
-
-            vkQueueSubmit(device->secondaryQueue(), 1, &vkSubmitInfo, fence->vkFence());
-
-            freeFences_.pop();
-            buildingFences_.push_back(fence);
-            buildingBatches_.push_back(chunkBuildDataBatch);
+        if (chunkBuildData->waterOccupancyBuffer != nullptr) {
+            chunkBuildData->waterOccupancyBuffer->uploadToBuffer(worldAsyncBuffer);
+        }
+        if (chunkBuildData->solidOccupancyBuffer != nullptr) {
+            chunkBuildData->solidOccupancyBuffer->uploadToBuffer(worldAsyncBuffer);
         }
     }
+
+    // Barrier: transfer → micromap build + BLAS build
+    std::vector<vk::CommandBuffer::BufferMemoryBarrier> bufferBarriers;
+    for (auto chunkBuildData : chunkBuildDataBatch->batchData) {
+        for (int i = 0; i < chunkBuildData->geometryCount; i++) {
+            VkPipelineStageFlags2 dstStage = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+            auto &gd = chunkBuildData->ommGeometryData[i];
+            if (gd.hasMicromap) {
+                dstStage |= VK_PIPELINE_STAGE_2_MICROMAP_BUILD_BIT_EXT;
+            }
+
+            bufferBarriers.push_back(vk::CommandBuffer::BufferMemoryBarrier{
+                .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                .dstStageMask = dstStage,
+                .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                .srcQueueFamilyIndex = secondaryQueueIndex,
+                .dstQueueFamilyIndex = secondaryQueueIndex,
+                .buffer = chunkBuildData->vertexBuffers[i],
+            });
+
+            bufferBarriers.push_back(vk::CommandBuffer::BufferMemoryBarrier{
+                .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                .dstStageMask = dstStage,
+                .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                .srcQueueFamilyIndex = secondaryQueueIndex,
+                .dstQueueFamilyIndex = secondaryQueueIndex,
+                .buffer = chunkBuildData->indexBuffers[i],
+            });
+
+            if (chunkBuildData->ommIndexBuffers[i] != nullptr) {
+                bufferBarriers.push_back(vk::CommandBuffer::BufferMemoryBarrier{
+                    .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                    .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                    .dstStageMask = dstStage,
+                    .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                    .srcQueueFamilyIndex = secondaryQueueIndex,
+                    .dstQueueFamilyIndex = secondaryQueueIndex,
+                    .buffer = chunkBuildData->ommIndexBuffers[i],
+                });
+            }
+
+            if (gd.hasMicromap) {
+                bufferBarriers.push_back(vk::CommandBuffer::BufferMemoryBarrier{
+                    .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                    .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                    .dstStageMask = VK_PIPELINE_STAGE_2_MICROMAP_BUILD_BIT_EXT,
+                    .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                    .srcQueueFamilyIndex = secondaryQueueIndex,
+                    .dstQueueFamilyIndex = secondaryQueueIndex,
+                    .buffer = gd.arrayBuffer,
+                });
+                bufferBarriers.push_back(vk::CommandBuffer::BufferMemoryBarrier{
+                    .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                    .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                    .dstStageMask = VK_PIPELINE_STAGE_2_MICROMAP_BUILD_BIT_EXT,
+                    .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                    .srcQueueFamilyIndex = secondaryQueueIndex,
+                    .dstQueueFamilyIndex = secondaryQueueIndex,
+                    .buffer = gd.descBuffer,
+                });
+            }
+        }
+
+        for (int i = 0; i < chunkBuildData->waterVertexBuffers.size(); i++) {
+            bufferBarriers.push_back(vk::CommandBuffer::BufferMemoryBarrier{
+                .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                .srcQueueFamilyIndex = secondaryQueueIndex,
+                .dstQueueFamilyIndex = secondaryQueueIndex,
+                .buffer = chunkBuildData->waterVertexBuffers[i],
+            });
+
+            bufferBarriers.push_back(vk::CommandBuffer::BufferMemoryBarrier{
+                .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                .srcQueueFamilyIndex = secondaryQueueIndex,
+                .dstQueueFamilyIndex = secondaryQueueIndex,
+                .buffer = chunkBuildData->waterIndexBuffers[i],
+            });
+        }
+        if (chunkBuildData->waterOccupancyBuffer != nullptr) {
+            bufferBarriers.push_back(vk::CommandBuffer::BufferMemoryBarrier{
+                .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+                .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT,
+                .srcQueueFamilyIndex = secondaryQueueIndex,
+                .dstQueueFamilyIndex = secondaryQueueIndex,
+                .buffer = chunkBuildData->waterOccupancyBuffer,
+            });
+        }
+
+        if (chunkBuildData->solidOccupancyBuffer != nullptr) {
+            bufferBarriers.push_back(vk::CommandBuffer::BufferMemoryBarrier{
+                .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+                .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT,
+                .srcQueueFamilyIndex = secondaryQueueIndex,
+                .dstQueueFamilyIndex = secondaryQueueIndex,
+                .buffer = chunkBuildData->solidOccupancyBuffer,
+            });
+        }
+    }
+    worldAsyncBuffer->barriersBufferImage(bufferBarriers, {});
+
+    // Build micromaps (before BLAS build)
+    bool anyMicromaps = false;
+    for (auto chunkBuildData : chunkBuildDataBatch->batchData) {
+        for (int i = 0; i < chunkBuildData->geometryCount; i++) {
+            auto &gd = chunkBuildData->ommGeometryData[i];
+            if (!gd.hasMicromap) continue;
+            anyMicromaps = true;
+
+            VkMicromapBuildInfoEXT buildInfo{};
+            buildInfo.sType = VK_STRUCTURE_TYPE_MICROMAP_BUILD_INFO_EXT;
+            buildInfo.type = VK_MICROMAP_TYPE_OPACITY_MICROMAP_EXT;
+            buildInfo.flags = VK_BUILD_MICROMAP_PREFER_FAST_TRACE_BIT_EXT;
+            buildInfo.mode = VK_BUILD_MICROMAP_MODE_BUILD_EXT;
+            buildInfo.dstMicromap = gd.micromap;
+            buildInfo.data.deviceAddress = gd.arrayBuffer->bufferAddress();
+            buildInfo.triangleArray.deviceAddress = gd.descBuffer->bufferAddress();
+            buildInfo.triangleArrayStride = sizeof(VkMicromapTriangleEXT);
+            buildInfo.usageCountsCount = static_cast<uint32_t>(gd.descHistogram.size());
+            buildInfo.pUsageCounts = gd.descHistogram.data();
+            if (gd.micromapScratchBuffer) {
+                buildInfo.scratchData.deviceAddress = gd.micromapScratchBuffer->bufferAddress();
+            }
+
+            vkCmdBuildMicromapsEXT(worldAsyncBuffer->vkCommandBuffer(), 1, &buildInfo);
+        }
+    }
+
+    if (anyMicromaps) {
+        VkMemoryBarrier2 mmBarrier{};
+        mmBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+        mmBarrier.srcStageMask = VK_PIPELINE_STAGE_2_MICROMAP_BUILD_BIT_EXT;
+        mmBarrier.srcAccessMask = VK_ACCESS_2_MICROMAP_WRITE_BIT_EXT;
+        mmBarrier.dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+        mmBarrier.dstAccessMask = VK_ACCESS_2_MICROMAP_READ_BIT_EXT;
+
+        VkDependencyInfo depInfo{};
+        depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        depInfo.memoryBarrierCount = 1;
+        depInfo.pMemoryBarriers = &mmBarrier;
+        vkCmdPipelineBarrier2(worldAsyncBuffer->vkCommandBuffer(), &depInfo);
+    }
+
+    // Build BLAS
+    std::vector<std::shared_ptr<vk::BLASBuilder>> builders;
+    for (auto chunkBuildData : chunkBuildDataBatch->batchData) {
+        builders.push_back(chunkBuildData->blasBuilder);
+        if (chunkBuildData->waterBlasBuilder != nullptr) {
+            builders.push_back(chunkBuildData->waterBlasBuilder);
+        }
+    }
+    vk::BLASBuilder::batchSubmit(builders, worldAsyncBuffer);
+
+    worldAsyncBuffer->end();
+
+    VkSubmitInfo vkSubmitInfo = {};
+    vkSubmitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    vkSubmitInfo.waitSemaphoreCount = 0;
+    vkSubmitInfo.pWaitSemaphores = nullptr;
+    vkSubmitInfo.pWaitDstStageMask = nullptr;
+    vkSubmitInfo.commandBufferCount = 1;
+    vkSubmitInfo.pCommandBuffers = &worldAsyncBuffer->vkCommandBuffer();
+    vkSubmitInfo.signalSemaphoreCount = 0;
+    vkSubmitInfo.pSignalSemaphores = nullptr;
+
+    vkQueueSubmit(device->secondaryQueue(), 1, &vkSubmitInfo, fence->vkFence());
+
+    buildingFences_.push_back(fence);
+    buildingBatches_.push_back(chunkBuildDataBatch);
 }
 
 uint32_t ChunkBuildScheduler::chunkBuildingBatchSize() {
@@ -998,17 +1028,25 @@ void Chunks::resetFrame() {
 
 void Chunks::invalidateChunk(int id) {
     std::unique_lock<std::recursive_mutex> lock(mutex_);
+    if (id < 0 || id >= (int)chunks_.size() || chunks_[id] == nullptr) return;
+
     chunks_[id]->invalidate();
 
-    ChunkPackedData data = {
-        .geometryCount = 0,
-    };
+    if (chunkPackedData_ != nullptr) {
+        ChunkPackedData data = {
+            .geometryCount = 0,
+        };
 
-    chunkPackedData_->uploadToBuffer(&data, sizeof(ChunkPackedData), id * sizeof(ChunkPackedData));
+        chunkPackedData_->uploadToBuffer(&data, sizeof(ChunkPackedData), id * sizeof(ChunkPackedData));
+    }
 }
 
 // maybe called async
 void Chunks::queueChunkBuild(ChunkBuildTask task) {
+    if (task.geometryCount < 0) return;
+    if (task.vertexCounts == nullptr && task.geometryCount > 0) return;
+    if (task.geometryTypes == nullptr && task.geometryCount > 0) return;
+
     uint32_t allVertexCount = 0, allIndexCount = 0;
     std::vector<World::GeometryTypes> geometryTypes;
     std::vector<std::vector<vk::VertexFormat::PBRTriangle>> vertices;
@@ -1017,6 +1055,7 @@ void Chunks::queueChunkBuild(ChunkBuildTask task) {
     std::vector<std::vector<uint32_t>> waterIndices;
 
     int occupancyTotalSize = task.occupancySizeX * task.occupancySizeY * task.occupancySizeZ;
+    if (occupancyTotalSize < 0) occupancyTotalSize = 0;
     std::vector<uint32_t> waterOccupancy;
     std::vector<uint32_t> solidOccupancy;
     if (task.waterOccupancy != nullptr && occupancyTotalSize > 0) {
@@ -1029,6 +1068,9 @@ void Chunks::queueChunkBuild(ChunkBuildTask task) {
     for (int i = 0; i < task.geometryCount; i++) {
         World::GeometryTypes geometryType = static_cast<World::GeometryTypes>(task.geometryTypes[i]);
         int geometryTexture = task.geometryTextures[i];
+        (void)geometryTexture;
+
+        if (task.vertexCounts[i] <= 0 || task.vertices[i] == nullptr) continue;
 
         if (geometryType == World::WORLD_WATER_MASK) {
             auto &waterGeometryVertices = waterVertices.emplace_back();
@@ -1078,6 +1120,8 @@ void Chunks::queueChunkBuild(ChunkBuildTask task) {
 
     std::unique_lock<std::recursive_mutex> lock(mutex_);
 
+    if (task.id < 0 || task.id >= (int64_t)chunks_.size() || task.id >= (int64_t)chunkBuildDatas_.size() || chunks_[task.id] == nullptr) return;
+
     std::shared_ptr<ChunkBuildData> chunkBuildData = ChunkBuildData::create(
         task.id, task.x, task.y, task.z, chunks_[task.id]->latestVersion++, allVertexCount, allIndexCount,
         static_cast<uint32_t>(geometryTypes.size()),
@@ -1097,33 +1141,51 @@ void Chunks::queueChunkBuild(ChunkBuildTask task) {
         // Skip OMM entirely for important chunks when OMM is enabled — avoids
         // VK_NULL_HANDLE micromap in BLAS pNext which causes invisibility on some drivers.
         // The chunk is queued for async Phase 2 rebuild below.
-        chunkBuildData->build(false, ommEnabled);
+        bool buildOk = false;
+        try {
+            chunkBuildData->build(false, ommEnabled);
+            buildOk = true;
+        } catch (const std::exception &e) {
+            std::cerr << "[Chunks] important chunk build exception: " << e.what() << std::endl;
+        } catch (...) {
+            std::cerr << "[Chunks] important chunk build unknown exception" << std::endl;
+        }
+
+        if (!buildOk) {
+            // Build failed — queue for async rebuild instead
+            queuedIndex_.insert(task.id);
+            chunkBuildDatas_[task.id] = chunkBuildData;
+            return;
+        }
+
         for (int i = 0; i < chunkBuildData->geometryCount; i++) {
             Renderer::instance().buffers()->queueImportantWorldUpload(chunkBuildData->vertexBuffers[i],
-                                                                      chunkBuildData->indexBuffers[i]);
+                                                                       chunkBuildData->indexBuffers[i]);
             if (chunkBuildData->ommIndexBuffers[i] != nullptr) {
                 Renderer::instance().buffers()->queueImportantWorldUpload(chunkBuildData->ommIndexBuffers[i],
-                                                                          nullptr);
+                                                                           nullptr);
             }
         }
 
         for (int i = 0; i < chunkBuildData->waterVertexBuffers.size(); i++) {
             Renderer::instance().buffers()->queueImportantWorldUpload(chunkBuildData->waterVertexBuffers[i],
-                                                                      chunkBuildData->waterIndexBuffers[i]);
+                                                                       chunkBuildData->waterIndexBuffers[i]);
         }
 
         if (chunkBuildData->waterOccupancyBuffer != nullptr) {
             Renderer::instance().buffers()->queueImportantWorldUpload(chunkBuildData->waterOccupancyBuffer,
-                                                                      nullptr);
+                                                                       nullptr);
         }
         if (chunkBuildData->solidOccupancyBuffer != nullptr) {
             Renderer::instance().buffers()->queueImportantWorldUpload(chunkBuildData->solidOccupancyBuffer,
-                                                                      nullptr);
+                                                                       nullptr);
         }
 
 
 
-        importantBLASBuilders_->push_back(chunkBuildData->blasBuilder);
+        if (chunkBuildData->blasBuilder != nullptr) {
+            importantBLASBuilders_->push_back(chunkBuildData->blasBuilder);
+        }
 
         if (chunkBuildData->waterBlasBuilder != nullptr) {
             importantBLASBuilders_->push_back(chunkBuildData->waterBlasBuilder);
@@ -1163,11 +1225,13 @@ void Chunks::queueChunkBuild(ChunkBuildTask task) {
             chunkBuildDatas_[task.id] = asyncRebuildData;
         }
 
-        ChunkPackedData data = {
-            .geometryCount = chunkBuildData->geometryCount,
-        };
+        if (chunkPackedData_ != nullptr) {
+            ChunkPackedData data = {
+                .geometryCount = chunkBuildData->geometryCount,
+            };
 
-        chunkPackedData_->uploadToBuffer(&data, sizeof(ChunkPackedData), chunkBuildData->id * sizeof(ChunkPackedData));
+            chunkPackedData_->uploadToBuffer(&data, sizeof(ChunkPackedData), chunkBuildData->id * sizeof(ChunkPackedData));
+        }
     } else {
         queuedIndex_.insert(task.id);
         chunkBuildDatas_[task.id] = chunkBuildData;
@@ -1176,6 +1240,7 @@ void Chunks::queueChunkBuild(ChunkBuildTask task) {
 
 bool Chunks::isChunkReady(int64_t id) {
     std::unique_lock<std::recursive_mutex> lock(mutex_);
+    if (id < 0 || id >= (int64_t)chunks_.size() || chunks_[id] == nullptr) return false;
     auto chunkRenderData = chunks_[id]->tryGetValid();
     return chunkRenderData->blas != nullptr;
 }

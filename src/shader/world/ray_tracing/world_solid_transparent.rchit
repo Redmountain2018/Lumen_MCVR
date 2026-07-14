@@ -869,7 +869,7 @@ void main() {
             vec3 viewDir = normalize(mainRay.direction);
             vec3 n = normalize(normal);
 
-            vec3 refractDir = refract(viewDir, n, 1.0 / 1.33);
+            vec3 refractDir = refract(viewDir, n, 1.0 / 1.333);
             if (length(refractDir) < 1e-4) {
                 refractDir = viewDir;
             } else {

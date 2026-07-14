@@ -11,6 +11,8 @@ layout(set = 1, binding = 1) uniform SkyUniform {
     SkyUBO skyUBO;
 };
 
+layout(set = 0, binding = 0) uniform sampler2D transLUT;
+
 layout(push_constant) uniform Push {
     int face; // 0..5
 }
@@ -31,43 +33,39 @@ bool intersectSphere(vec3 ro, vec3 rd, float R, out float tNear, out float tFar)
     return true;
 }
 
-float densityExpImproved(float h, float H) {
-    // Variable scale height: increases with altitude
-    float H_eff = H * (1.0 + h / 100000.0);
-    float density = exp(-max(h, 0.0) / H_eff);
-    // Extra attenuation in upper atmosphere to simulate transition to space
-    float extra = exp(-max(h - 50000.0, 0.0) / 50000.0);
-    return density * extra;
+float phaseRayleigh(float cosTheta) {
+    return 3.0 / (16.0 * PI) * (1.0 + cosTheta * cosTheta);
 }
 
-float ozoneAbsorption(float h) {
-    // Ozone layer centered at 25 km, Gaussian profile
-    float peakHeight = 25000.0;
-    float width = 10000.0;
-    return 0.1 * exp(-pow((h - peakHeight) / width, 2.0));
-}
-
-float rayleighPhase(float cosTheta) {
-    return (3.0 / (16.0 * PI)) * (1.0 + cosTheta * cosTheta);
-}
-
-float miePhase(float cosTheta, float g) {
+float phaseMieHG(float cosTheta, float g) {
+    cosTheta = clamp(cosTheta, -1.0, 1.0);
+    g = clamp(g, -0.999, 0.999);
     float g2 = g * g;
-    float denom = 4.0 * PI * pow(1.0 + g2 - 2.0 * g * cosTheta, 1.5);
-    return (1.0 - g2) / denom;
+    float d = 1.0 + g2 - 2.0 * g * cosTheta;
+    float denom = pow(d + 1e-6, 1.5);
+    return (1.0 - g2) / (4.0 * PI * denom);
 }
 
-float fogDensity(float height) {
-    // exponential fog density
-    float fogHeight = skyUBO.Hr; // reuse Rayleigh scale height as fog scale height
-    return exp(-max(height, 0.0) / fogHeight);
+vec2 transmittanceUv(float r, float mu, SkyUBO ubo) {
+    float u = clamp(mu * 0.5 + 0.5, 0.0, 1.0);
+    float v = clamp((r - ubo.Rg) / (ubo.Rt - ubo.Rg), 0.0, 1.0);
+    return vec2(u, v);
 }
 
-float isotropicPhase() {
-    return 1.0 / (4.0 * PI);
+float densityExp(float h, float H) {
+    return exp(-max(h, 0.0) / H);
 }
 
-vec3 integrateFogScattering(vec3 ro, vec3 rd, vec3 sunDir, vec3 sunColor) {
+vec3 sampleTransmittance(float r, float mu) {
+    vec2 uv = transmittanceUv(r, mu, skyUBO);
+
+    vec2 invSize = 1.0 / vec2(textureSize(transLUT, 0));
+    uv = clamp(uv, 0.5 * invSize, 1.0 - 0.5 * invSize);
+
+    return texture(transLUT, uv).rgb;
+}
+
+vec3 integrateSingleScattering(vec3 ro, vec3 rd, bool isSun) {
     float tAtm0, tAtm1;
     if (!intersectSphere(ro, rd, skyUBO.Rt, tAtm0, tAtm1)) return vec3(0.0);
     tAtm0 = max(tAtm0, 0.0);
@@ -79,53 +77,42 @@ vec3 integrateFogScattering(vec3 ro, vec3 rd, vec3 sunDir, vec3 sunColor) {
         if (tHitG > 0.0) tAtm1 = min(tAtm1, tHitG);
     }
 
-    const int STEPS = 64;
+    const int STEPS = 32;
     float dt = (tAtm1 - tAtm0) / float(STEPS);
 
     vec3 L = vec3(0.0);
-    vec3 transmittance = vec3(1.0);
+    vec3 T_view = vec3(1.0);
+
+    float cosTheta = dot(normalize(isSun ? skyUBO.sunDirection : skyUBO.moonDirection), rd);
+    float pr = phaseRayleigh(cosTheta);
+    float pm = phaseMieHG(cosTheta, skyUBO.mieG);
 
     for (int i = 0; i < STEPS; i++) {
         float t = tAtm0 + (float(i) + 0.5) * dt;
         vec3 x = ro + rd * t;
+
         float r = length(x);
         float h = r - skyUBO.Rg;
 
-        // densities
-        float dR = densityExpImproved(h, skyUBO.Hr);
-        float dM = densityExpImproved(h, skyUBO.Hm);
-        float ozone = ozoneAbsorption(h);
+        float dR = densityExp(h, skyUBO.Hr);
+        float dM = densityExp(h, skyUBO.Hm);
 
-        // scattering coefficients
         vec3 sigmaS_R = skyUBO.betaR * dR;
         vec3 sigmaS_M = skyUBO.betaM * dM;
-        vec3 sigmaAbs = vec3(ozone * 0.1); // absorption coefficient
-        vec3 sigmaE = sigmaS_R + sigmaS_M + sigmaAbs; // extinction
+        vec3 sigmaT = sigmaS_R + sigmaS_M;
 
-        // phase functions
-        float cosTheta = dot(normalize(sunDir), rd);
-        float phaseR = rayleighPhase(cosTheta);
-        float phaseM = miePhase(cosTheta, skyUBO.mieG);
+        vec3 up = x / r;
+        float muS = dot(up, normalize(isSun ? skyUBO.sunDirection : skyUBO.moonDirection));
+        vec3 T_sun = sampleTransmittance(r, muS);
 
-        // sun‑light attenuation along the path from top of atmosphere to x
-        float cosSunZenith = dot(normalize(x), sunDir);
-        // clamp to avoid division by zero and negative values (sun below horizon)
-        float secant = 1.0 / max(cosSunZenith, 0.001);
-        // vertical optical depths (unitless)
-        float verticalDepthR = skyUBO.Hr * dR;
-        float verticalDepthM = skyUBO.Hm * dM;
-        float verticalDepthOzone = ozone * 0.1 * 10000.0; // approximate scale height for ozone
-        vec3 opticalDepthSun = (skyUBO.betaR * verticalDepthR +
-                                skyUBO.betaM * verticalDepthM +
-                                vec3(verticalDepthOzone)) * secant;
-        vec3 transmittanceSun = exp(-opticalDepthSun);
+        vec3 S = sigmaS_R * pr + (sigmaS_M * (pm));
+        vec3 sourceRadiance = isSun
+            ? (skyUBO.sunRadiance * skyUBO.envCelestial.z)
+            : (skyUBO.moonRadiance * skyUBO.envCelestial.w);
+        vec3 dL = T_view * (T_sun * (S * sourceRadiance)) * dt;
 
-        // sunlight contribution
-        vec3 sunLight = sunColor * transmittanceSun;
-        vec3 scattering = (sigmaS_R * phaseR + sigmaS_M * phaseM) * sunLight;
-
-        L += transmittance * scattering * dt;
-        transmittance *= exp(-sigmaE * dt);
+        L += dL;
+        T_view *= exp(-sigmaT * dt);
     }
 
     return L;
@@ -147,15 +134,8 @@ void main() {
     rd.y = max(rd.y, skyUBO.minViewCos);
     rd = normalize(mix(vec3(rd.x, skyUBO.minViewCos, rd.z), rd, blend));
     float cameraHeight = worldUBO.cameraViewMatInv[3].y;
-    vec3 ro = vec3(0.0, skyUBO.Rg + cameraHeight + 70, 0.0);
+    vec3 ro = vec3(0.0, skyUBO.Rg + cameraHeight + 70, 0.0); // camera height mapped to radius (+70 for negative y)
 
-    // sun and moon contributions
-    vec3 sunColor = skyUBO.sunRadiance * skyUBO.envCelestial.z;
-    vec3 moonColor = skyUBO.moonRadiance * skyUBO.envCelestial.w;
-
-    vec3 L = integrateFogScattering(ro, rd, skyUBO.sunDirection, sunColor)
-           + integrateFogScattering(ro, rd, skyUBO.moonDirection, moonColor);
-
-
+    vec3 L = integrateSingleScattering(ro, rd, false) + integrateSingleScattering(ro, rd, true);
     outColor = vec4(L, 1.0);
 }

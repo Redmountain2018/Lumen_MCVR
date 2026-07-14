@@ -92,8 +92,12 @@ void EntityBuildDataBatch::build() {
         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
-    vk::VertexFormat::PBRTriangle *vertexPtr = static_cast<vk::VertexFormat::PBRTriangle *>(vertexBuffer->mappedPtr());
-    uint32_t *indexPtr = static_cast<uint32_t *>(indexBuffer->mappedPtr());
+    void *vertexMapped = vertexBuffer->mappedPtr();
+    void *indexMapped = indexBuffer->mappedPtr();
+    if (vertexMapped == nullptr || indexMapped == nullptr) return;
+
+    vk::VertexFormat::PBRTriangle *vertexPtr = static_cast<vk::VertexFormat::PBRTriangle *>(vertexMapped);
+    uint32_t *indexPtr = static_cast<uint32_t *>(indexMapped);
     for (auto data : datas) {
         for (int i = 0; i < data->geometryCount; i++) {
             std::memcpy(vertexPtr, data->vertices[i].data(),
@@ -624,9 +628,11 @@ void Entities::queueBuild(EntitiesBuildTask task) {
                 return {true, {b00, b10, b11, b01, t00, t10, t11, t01}};
             };
 
+            int vertexCount = task.vertexCounts[geometryIndex + i];
             switch (static_cast<World::DrawMode>(task.indexFormats[geometryIndex + i])) {
                 case World::DrawMode::QUADS: {
-                    for (int j = 0; j < task.vertexCounts[geometryIndex + i]; j += 4) {
+                    int quadsCount = vertexCount & ~3;
+                    for (int j = 0; j < quadsCount; j += 4) {
                         geometryIndices.push_back(j + 0);
                         geometryIndices.push_back(j + 1);
                         geometryIndices.push_back(j + 2);
@@ -669,7 +675,7 @@ void Entities::queueBuild(EntitiesBuildTask task) {
                 }
                 case World::DrawMode::TRIANGLE_STRIP: {
                     std::vector<vk::VertexFormat::PBRTriangle> fixedVertices;
-                    for (int j = 2; j < task.vertexCounts[geometryIndex + i]; j += 2) {
+                    for (int j = 2; j + 1 < vertexCount; j += 2) {
                         auto v0 = geometryVertices[j - 2];
                         auto v1 = geometryVertices[j - 1];
                         auto v2 = geometryVertices[j - 1];

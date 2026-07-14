@@ -273,6 +273,8 @@ void vk::BLASBuilder::batchSubmit(std::vector<std::shared_ptr<BLASBuilder>> &bui
     std::vector<VkAccelerationStructureBuildRangeInfoKHR *> pbuildRanges;
 
     for (int i = 0; i < builders.size(); i++) {
+        if (builders[i] == nullptr) continue;
+
         VkAccelerationStructureBuildGeometryInfoKHR buildInfo{};
         buildInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
         buildInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
@@ -297,8 +299,10 @@ void vk::BLASBuilder::batchSubmit(std::vector<std::shared_ptr<BLASBuilder>> &bui
         pbuildRanges.push_back(buildRanges[buildRanges.size() - 1].data());
     }
 
-    vkCmdBuildAccelerationStructuresKHR(commandBuffer->vkCommandBuffer(), buildInfos.size(), buildInfos.data(),
-                                        pbuildRanges.data());
+    if (!buildInfos.empty()) {
+        vkCmdBuildAccelerationStructuresKHR(commandBuffer->vkCommandBuffer(), buildInfos.size(), buildInfos.data(),
+                                            pbuildRanges.data());
+    }
 }
 
 
@@ -310,6 +314,8 @@ void vk::BLASBuilder::batchSubmitExternal(std::vector<std::shared_ptr<BLASBuilde
     std::vector<VkAccelerationStructureBuildRangeInfoKHR *> pbuildRanges;
 
     for (int i = 0; i < builders.size(); i++) {
+        if (builders[i] == nullptr) continue;
+
         VkAccelerationStructureBuildGeometryInfoKHR buildInfo{};
         buildInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
         buildInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
@@ -334,8 +340,10 @@ void vk::BLASBuilder::batchSubmitExternal(std::vector<std::shared_ptr<BLASBuilde
         pbuildRanges.push_back(buildRanges[buildRanges.size() - 1].data());
     }
 
-    vkCmdBuildAccelerationStructuresKHR(commandBuffer->vkCommandBuffer(), buildInfos.size(), buildInfos.data(),
-                                        pbuildRanges.data());
+    if (!buildInfos.empty()) {
+        vkCmdBuildAccelerationStructuresKHR(commandBuffer->vkCommandBuffer(), buildInfos.size(), buildInfos.data(),
+                                            pbuildRanges.data());
+    }
 }
 
 std::shared_ptr<vk::BLASBuilder> vk::BLASBatchBuilder::defineBLASBuilder() {

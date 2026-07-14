@@ -36,6 +36,9 @@ vk::HostVisibleBuffer::HostVisibleBuffer(std::shared_ptr<VMA> vma,
     if (vmaCreateBuffer(vma_->allocator(), &bufferInfo, &allocationInfo, &buffer_, &allocation_, &allocationInfo_) !=
         VK_SUCCESS) {
         bufferCerr() << "failed to create staging buffer" << std::endl;
+        mappedPtr_ = nullptr;
+        buffer_ = VK_NULL_HANDLE;
+        return;
     }
     mappedPtr_ = allocationInfo_.pMappedData;
 
@@ -68,6 +71,9 @@ vk::HostVisibleBuffer::HostVisibleBuffer(std::shared_ptr<VMA> vma,
     if (vmaCreateBufferWithAlignment(vma_->allocator(), &bufferInfo, &allocationInfo, minAlignment, &buffer_,
                                      &allocation_, &allocationInfo_) != VK_SUCCESS) {
         bufferCerr() << "failed to create staging buffer" << std::endl;
+        mappedPtr_ = nullptr;
+        buffer_ = VK_NULL_HANDLE;
+        return;
     }
     mappedPtr_ = allocationInfo_.pMappedData;
 
@@ -99,8 +105,9 @@ void vk::HostVisibleBuffer::uploadToBuffer(void *src) {
 }
 
 void vk::HostVisibleBuffer::uploadToBuffer(void *src, size_t size, size_t offset) {
-    std::memcpy(mappedPtr_, src, size);
-    vmaFlushAllocation(vma_->allocator(), allocation_, 0, size);
+    if (mappedPtr_ == nullptr || src == nullptr || size == 0) return;
+    std::memcpy(static_cast<char *>(mappedPtr_) + offset, src, size);
+    vmaFlushAllocation(vma_->allocator(), allocation_, offset, size);
 }
 
 void vk::HostVisibleBuffer::flush() {
@@ -173,8 +180,11 @@ vk::DeviceLocalBuffer::DeviceLocalBuffer(std::shared_ptr<VMA> vma,
         if (vmaCreateBuffer(vma_->allocator(), &bufferInfo, &allocationInfo, &stagingBuffer_, &stagingAllocation_,
                             &stagingAllocationInfo_) != VK_SUCCESS) {
             bufferCerr() << "failed to create staging buffer" << std::endl;
+            mappedPtr_ = nullptr;
+            stagingBuffer_ = VK_NULL_HANDLE;
+        } else {
+            mappedPtr_ = stagingAllocationInfo_.pMappedData;
         }
-        mappedPtr_ = stagingAllocationInfo_.pMappedData;
     }
 
     // buffer
@@ -186,17 +196,14 @@ vk::DeviceLocalBuffer::DeviceLocalBuffer(std::shared_ptr<VMA> vma,
     VmaAllocationCreateInfo allocationInfo = {};
     allocationInfo.flags = vmaAllocationFlags;
     allocationInfo.usage = vmaUsage;
-    // if (usageExceptTransfer & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) {
-    //     allocationInfo.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
-    //     std::cout << "already specified VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT" << std::endl;
-    // }
 
     if (vmaCreateBuffer(vma_->allocator(), &bufferInfo, &allocationInfo, &buffer_, &allocation_, &allocationInfo_) !=
         VK_SUCCESS) {
         bufferCerr() << "failed to create buffer" << std::endl;
+        buffer_ = VK_NULL_HANDLE;
     }
 
-    if (usageExceptTransfer & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) {
+    if (buffer_ != VK_NULL_HANDLE && (usageExceptTransfer & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT)) {
         VkBufferDeviceAddressInfo deviceAddressInfo{.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
                                                     .buffer = buffer_};
         bufferAddress_ = vkGetBufferDeviceAddress(device_->vkDevice(), &deviceAddressInfo);
@@ -235,8 +242,11 @@ vk::DeviceLocalBuffer::DeviceLocalBuffer(std::shared_ptr<VMA> vma,
         if (vmaCreateBuffer(vma_->allocator(), &bufferInfo, &allocationInfo, &stagingBuffer_, &stagingAllocation_,
                             &stagingAllocationInfo_) != VK_SUCCESS) {
             bufferCerr() << "failed to create staging buffer" << std::endl;
+            mappedPtr_ = nullptr;
+            stagingBuffer_ = VK_NULL_HANDLE;
+        } else {
+            mappedPtr_ = stagingAllocationInfo_.pMappedData;
         }
-        mappedPtr_ = stagingAllocationInfo_.pMappedData;
     }
 
     // buffer
@@ -248,17 +258,14 @@ vk::DeviceLocalBuffer::DeviceLocalBuffer(std::shared_ptr<VMA> vma,
     VmaAllocationCreateInfo allocationInfo = {};
     allocationInfo.flags = vmaAllocationFlags;
     allocationInfo.usage = vmaUsage;
-    // if (usageExceptTransfer & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) {
-    //     allocationInfo.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
-    //     std::cout << "already specified VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT" << std::endl;
-    // }
 
     if (vmaCreateBufferWithAlignment(vma_->allocator(), &bufferInfo, &allocationInfo, minAlignment, &buffer_,
                                      &allocation_, &allocationInfo_) != VK_SUCCESS) {
         bufferCerr() << "failed to create buffer" << std::endl;
+        buffer_ = VK_NULL_HANDLE;
     }
 
-    if (usageExceptTransfer & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) {
+    if (buffer_ != VK_NULL_HANDLE && (usageExceptTransfer & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT)) {
         VkBufferDeviceAddressInfo deviceAddressInfo{.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
                                                     .buffer = buffer_};
         bufferAddress_ = vkGetBufferDeviceAddress(device_->vkDevice(), &deviceAddressInfo);
@@ -298,12 +305,15 @@ void vk::DeviceLocalBuffer::downloadFromStagingBuffer(void *dest, size_t size, s
         if (vmaCreateBuffer(vma_->allocator(), &bufferInfo, &allocationInfo, &stagingBuffer_, &stagingAllocation_,
                             &stagingAllocationInfo_) != VK_SUCCESS) {
             bufferCerr() << "failed to create staging buffer" << std::endl;
+            stagingBuffer_ = VK_NULL_HANDLE;
+            return;
         }
         mappedPtr_ = stagingAllocationInfo_.pMappedData;
     }
 
+    if (mappedPtr_ == nullptr || dest == nullptr || size == 0) return;
     vmaInvalidateAllocation(vma_->allocator(), stagingAllocation_, offset, size);
-    std::memcpy(dest, mappedPtr_, size);
+    std::memcpy(dest, static_cast<char *>(mappedPtr_) + offset, size);
 
     if (!persistStaging_) {
         vmaDestroyBuffer(vma_->allocator(), stagingBuffer_, stagingAllocation_);
@@ -337,11 +347,14 @@ void vk::DeviceLocalBuffer::uploadToStagingBuffer(void *src, size_t size, size_t
         if (vmaCreateBuffer(vma_->allocator(), &bufferInfo, &allocationInfo, &stagingBuffer_, &stagingAllocation_,
                             &stagingAllocationInfo_) != VK_SUCCESS) {
             bufferCerr() << "failed to create staging buffer" << std::endl;
+            stagingBuffer_ = VK_NULL_HANDLE;
+            return;
         }
         mappedPtr_ = stagingAllocationInfo_.pMappedData;
     }
 
-    std::memcpy(mappedPtr_, src, size);
+    if (mappedPtr_ == nullptr || src == nullptr || size == 0) return;
+    std::memcpy(static_cast<char *>(mappedPtr_) + offset, src, size);
     vmaFlushAllocation(vma_->allocator(), stagingAllocation_, offset, size);
 
     if (!persistStaging_) {

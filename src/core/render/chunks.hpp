@@ -116,6 +116,8 @@ struct ChunkBuildDataBatch : public SharedObject<ChunkBuildDataBatch> {
                         std::vector<std::shared_ptr<Chunk1>> &chunks,
                         std::vector<std::shared_ptr<ChunkBuildData>> &chunkBuildDatas,
                         glm::vec3 cameraPos);
+
+    ChunkBuildDataBatch(std::vector<std::shared_ptr<ChunkBuildData>> &&batchData);
 };
 
 class ChunkBuildScheduler : public SharedObject<ChunkBuildScheduler> {
@@ -244,6 +246,5 @@ class Chunks : public SharedObject<Chunks> {
     std::vector<std::shared_ptr<ChunkBuildData>> chunkBuildDatas_;
     std::set<int64_t> queuedIndex_;
     std::shared_ptr<ChunkBuildScheduler> chunkBuildScheduler_;
-
     std::shared_ptr<std::vector<std::shared_ptr<vk::BLASBuilder>>> importantBLASBuilders_;
 };

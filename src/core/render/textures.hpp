@@ -7,6 +7,7 @@
 #include <functional>
 #include <map>
 #include <mutex>
+#include <vector>
 
 class Framework;
 
@@ -22,6 +23,12 @@ class Textures : public SharedObject<Textures> {
         uint32_t width = 0;
         uint32_t height = 0;
         bool animated = false; // true if re-uploaded (animation frame change)
+    };
+
+    struct SubmittedUploadBatch {
+        std::shared_ptr<vk::Fence> fence;
+        std::shared_ptr<vk::CommandBuffer> commandBuffer;
+        std::vector<std::shared_ptr<vk::HostVisibleBuffer>> stagingBuffers;
     };
 
     Textures(std::shared_ptr<Framework> framework);
@@ -52,6 +59,13 @@ class Textures : public SharedObject<Textures> {
     const TextureAlphaData *getTextureAlphaData(uint32_t id) const;
 
   private:
+    static constexpr size_t UPLOAD_FLUSH_THRESHOLD = 64 * 1024 * 1024; // 64MB
+
+    std::shared_ptr<vk::HostVisibleBuffer> acquireUploadStagingBuffer(size_t minSize);
+    std::shared_ptr<vk::Fence> acquireUploadFence();
+    void collectCompletedUploadsImpl();
+    void flushQueuedUploadImpl();
+
     std::map<uint32_t, std::shared_ptr<vk::DeviceLocalImage>> textures_;
     std::map<uint32_t, std::shared_ptr<vk::Sampler>> samplers;
     uint32_t nextID = 0;
@@ -59,6 +73,11 @@ class Textures : public SharedObject<Textures> {
 
     std::map<uint32_t, std::shared_ptr<ImageBufferCache>> caches_;
     std::shared_ptr<std::map<uint32_t, std::vector<VkBufferImageCopy>>> uploadQueue_;
+    std::vector<SubmittedUploadBatch> submittedUploadBatches_;
+    std::vector<std::shared_ptr<vk::CommandBuffer>> freeUploadCommandBuffers_;
+    std::vector<std::shared_ptr<vk::HostVisibleBuffer>> freeUploadStagingBuffers_;
+    std::vector<std::shared_ptr<vk::Fence>> freeUploadFences_;
+    size_t queuedUploadBytes_ = 0;
 
     std::map<uint32_t, AlphaClass> textureAlphaClass_;
     std::map<uint32_t, TextureAlphaData> textureAlphaData_;
@@ -75,6 +94,8 @@ class ImageBufferCache : public SharedObject<ImageBufferCache> {
     size_t append(void *src, size_t size);
     void flush();
     void reset();
+    std::shared_ptr<vk::HostVisibleBuffer> detachCurrentBuffer();
+    void replaceCurrentBuffer(std::shared_ptr<vk::HostVisibleBuffer> buffer);
 
     VkBuffer &vkBuffer();
 

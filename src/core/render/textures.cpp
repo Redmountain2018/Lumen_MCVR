@@ -20,13 +20,21 @@ void Textures::reset() {
     textureAlphaClass_.clear();
     textureAlphaData_.clear();
     nextID = 0;
+    submittedUploadBatches_.clear();
+    freeUploadCommandBuffers_.clear();
+    freeUploadStagingBuffers_.clear();
+    freeUploadFences_.clear();
+    queuedUploadBytes_ = 0;
 }
 
 void Textures::resetFrame() {
     auto framework = Renderer::instance().framework();
 
+    collectCompletedUploadsImpl();
+
     framework->gc().collect(uploadQueue_);
     uploadQueue_ = std::make_shared<std::map<uint32_t, std::vector<VkBufferImageCopy>>>();
+    queuedUploadBytes_ = 0;
 
     for (auto &entry : caches_) {
         auto &cache = entry.second;
@@ -166,49 +174,83 @@ void Textures::queueUpload(uint8_t *srcPointer,
     }
     dstTextureUploadQueueIter->second.emplace_back(region);
 
-#ifdef MCVR_ENABLE_OMM
-    // Extract alpha channel for OMM baking (mip 0 only, RGBA formats = 4 bpp)
-    if (level == 0 && bytePerPixel == 4) {
-        uint32_t texW = dstTexture->width();
-        uint32_t texH = dstTexture->height();
 
-        auto it = textureAlphaData_.find(dstId);
-        if (it != textureAlphaData_.end()) {
-            // Re-upload: alpha data is overwritten below, no special handling needed
-        } else {
-            TextureAlphaData &data = textureAlphaData_[dstId];
-            data.width = texW;
-            data.height = texH;
-            data.alpha.resize(texW * texH, 255);
-            data.animated = false;
-            it = textureAlphaData_.find(dstId);
-        }
-
-        TextureAlphaData &data = it->second;
-        // Copy alpha channel from the uploaded RGBA region
-        for (uint32_t row = 0; row < height; ++row) {
-            uint32_t srcRow = srcOffsetY + row;
-            uint32_t dstRow = dstOffsetY + row;
-            if (dstRow >= texH) break;
-            for (uint32_t col = 0; col < width; ++col) {
-                uint32_t srcCol = srcOffsetX + col;
-                uint32_t dstCol = dstOffsetX + col;
-                if (dstCol >= texW) break;
-                size_t srcIdx = (srcRow * srcRowPixels + srcCol) * 4 + 3; // alpha byte
-                data.alpha[dstRow * texW + dstCol] = srcPointer[srcIdx];
-            }
-        }
-    }
-#endif
+    queuedUploadBytes_ += srcSizeInBytes;
+    if (queuedUploadBytes_ >= UPLOAD_FLUSH_THRESHOLD) { flushQueuedUploadImpl(); }
 }
 
 void Textures::performQueuedUpload() {
     std::unique_lock<std::recursive_mutex> lck(mutex_);
+    collectCompletedUploadsImpl();
+    flushQueuedUploadImpl();
+}
 
-    std::shared_ptr<vk::CommandBuffer> cmdBuffer =
-        Renderer::instance().framework()->safeAcquireCurrentContext()->uploadCommandBuffer;
+std::shared_ptr<vk::HostVisibleBuffer> Textures::acquireUploadStagingBuffer(size_t minSize) {
+    auto vma = Renderer::instance().framework()->vma();
+    auto device = Renderer::instance().framework()->device();
 
-    auto physicalDevice = Renderer::instance().framework()->physicalDevice();
+    for (auto iter = freeUploadStagingBuffers_.begin(); iter != freeUploadStagingBuffers_.end(); ++iter) {
+        if ((*iter)->size() >= minSize) {
+            auto buffer = *iter;
+            freeUploadStagingBuffers_.erase(iter);
+            return buffer;
+        }
+    }
+
+    return vk::HostVisibleBuffer::create(vma, device, minSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+}
+
+std::shared_ptr<vk::Fence> Textures::acquireUploadFence() {
+    auto device = Renderer::instance().framework()->device();
+
+    if (!freeUploadFences_.empty()) {
+        auto fence = freeUploadFences_.back();
+        freeUploadFences_.pop_back();
+        vkResetFences(device->vkDevice(), 1, &fence->vkFence());
+        return fence;
+    }
+
+    return vk::Fence::create(device);
+}
+
+void Textures::collectCompletedUploadsImpl() {
+    auto device = Renderer::instance().framework()->device();
+    auto &batches = submittedUploadBatches_;
+    for (auto iter = batches.begin(); iter != batches.end();) {
+        if (vkGetFenceStatus(device->vkDevice(), iter->fence->vkFence()) == VK_SUCCESS) {
+            freeUploadCommandBuffers_.emplace_back(iter->commandBuffer);
+            freeUploadFences_.emplace_back(iter->fence);
+            for (auto &stagingBuffer : iter->stagingBuffers) {
+                freeUploadStagingBuffers_.emplace_back(stagingBuffer);
+            }
+            iter = batches.erase(iter);
+        } else {
+            ++iter;
+        }
+    }
+}
+
+void Textures::flushQueuedUploadImpl() {
+    if (uploadQueue_ == nullptr || uploadQueue_->empty()) {
+        queuedUploadBytes_ = 0;
+        return;
+    }
+
+    auto framework = Renderer::instance().framework();
+    auto device = framework->device();
+    auto physicalDevice = framework->physicalDevice();
+    collectCompletedUploadsImpl();
+    std::shared_ptr<vk::CommandBuffer> cmdBuffer;
+    if (!freeUploadCommandBuffers_.empty()) {
+        cmdBuffer = freeUploadCommandBuffers_.back();
+        freeUploadCommandBuffers_.pop_back();
+        vkResetCommandBuffer(cmdBuffer->vkCommandBuffer(), 0);
+    } else {
+        cmdBuffer = vk::CommandBuffer::create(device, framework->mainCommandPool());
+    }
+    auto fence = acquireUploadFence();
+    cmdBuffer->begin();
+
     auto mainQueueIndex = physicalDevice->mainQueueIndex();
 
     std::vector<vk::CommandBuffer::ImageMemoryBarrier> uploadPreImageBarriers, uploadPostImageBarriers;
@@ -288,6 +330,31 @@ void Textures::performQueuedUpload() {
     }
 
     cmdBuffer->barriersBufferImage({}, uploadPostImageBarriers);
+
+    std::vector<std::shared_ptr<vk::HostVisibleBuffer>> stagingBuffers;
+    stagingBuffers.reserve(uploadQueue_->size());
+    for (auto &entry : *uploadQueue_) {
+        auto cacheIter = caches_.find(entry.first);
+        if (cacheIter == caches_.end()) { continue; }
+        auto cache = cacheIter->second;
+        cache->flush();
+        auto detachedBuffer = cache->detachCurrentBuffer();
+        stagingBuffers.emplace_back(detachedBuffer);
+        cache->replaceCurrentBuffer(acquireUploadStagingBuffer(detachedBuffer->size()));
+    }
+
+    cmdBuffer->end();
+    cmdBuffer->submitMainQueueIndividual(device, fence);
+
+    submittedUploadBatches_.push_back({
+        .fence = fence,
+        .commandBuffer = cmdBuffer,
+        .stagingBuffers = std::move(stagingBuffers),
+    });
+
+    framework->gc().collect(uploadQueue_);
+    uploadQueue_ = std::make_shared<std::map<uint32_t, std::vector<VkBufferImageCopy>>>();
+    queuedUploadBytes_ = 0;
 }
 
 void Textures::bindAllTextures() {
@@ -377,5 +444,19 @@ VkBuffer &ImageBufferCache::vkBuffer() {
 
 void ImageBufferCache::reset() {
     current_ = (current_ + 1) % caches_.size();
+    bases_[current_] = 0;
+}
+
+std::shared_ptr<vk::HostVisibleBuffer> ImageBufferCache::detachCurrentBuffer() {
+    auto detached = caches_[current_];
+    caches_[current_] = nullptr;
+    capacities_[current_] = 0;
+    bases_[current_] = 0;
+    return detached;
+}
+
+void ImageBufferCache::replaceCurrentBuffer(std::shared_ptr<vk::HostVisibleBuffer> buffer) {
+    caches_[current_] = std::move(buffer);
+    capacities_[current_] = caches_[current_]->size();
     bases_[current_] = 0;
 }
