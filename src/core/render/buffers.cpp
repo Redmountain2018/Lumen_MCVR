@@ -389,21 +389,8 @@ void Buffers::setAndUploadSkyUniformBuffer(vk::Data::SkyUBO &ubo) {
     ubo.betaM = glm::vec3(21.000e-6, 21.000e-6, 21.000e-6);
     ubo.minViewCos = 0.02;
 
-    glm::vec3 toSun = normalize(ubo.sunDirection);
-    float cosTheta = std::max(toSun.y, 0.05f);
-    float opticalDepth = 1.0f / cosTheta;
-    float atomsphereThickness = 0.6f;
-    const glm::vec3 scatteringCoeff(0.85f * atomsphereThickness, 0.95f * atomsphereThickness, 1.2f * atomsphereThickness);
-    glm::vec3 transmittance = glm::exp(-scatteringCoeff * opticalDepth);
-        float maxComp = std::max(transmittance.x, std::max(transmittance.y, transmittance.z));
-    if (maxComp > 0.0f) {
-        transmittance /= maxComp;
-    } else {
-        transmittance = glm::vec3(0.0f); 
-    }
-
     ubo.sunRadiance = glm::vec3(16);
-    ubo.sunColor = transmittance;
+    ubo.sunColor = glm::vec3(16); // no longer used - see AtmosphereLight SSBO
     ubo.moonRadiance = glm::vec3(0.4, 0.5, 1);
 
     // HDR radiance scale: only apply when HDR10 output is actually active.
@@ -429,6 +416,26 @@ void Buffers::setAndUploadSkyUniformBuffer(vk::Data::SkyUBO &ubo) {
     }
 
     skyUniformBuffer_[context->frameIndex]->uploadToBuffer(&ubo);
+}
+
+std::shared_ptr<vk::HostVisibleBuffer> Buffers::atmosphereLightBuffer() {
+    std::unique_lock<std::recursive_mutex> lck(mtx_);
+    auto framework = Renderer::instance().framework();
+    auto context = framework->safeAcquireCurrentContext();
+    auto vma = framework->vma();
+    auto device = framework->device();
+
+    if (atmosphereLightBuffer_.size() <= context->frameIndex) {
+        atmosphereLightBuffer_.resize(context->frameIndex + 1);
+    }
+
+    if (atmosphereLightBuffer_[context->frameIndex] == nullptr) {
+        atmosphereLightBuffer_[context->frameIndex] =
+            vk::HostVisibleBuffer::create(vma, device, sizeof(vk::Data::AtmosphereLight),
+                                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    }
+
+    return atmosphereLightBuffer_[context->frameIndex];
 }
 
 void Buffers::setAndUploadTextureMappingBuffer(vk::Data::TextureMapping &mapping) {

@@ -50,6 +50,7 @@ class Buffers : public SharedObject<Buffers> {
     std::shared_ptr<vk::HostVisibleBuffer> textureMappingBuffer();
     std::shared_ptr<vk::HostVisibleBuffer> exposureDataBuffer();
     std::shared_ptr<vk::HostVisibleBuffer> lightMapUniformBuffer();
+    std::shared_ptr<vk::HostVisibleBuffer> atmosphereLightBuffer();
 
     void setUseJitter(bool useJitter);
 
@@ -71,6 +72,7 @@ class Buffers : public SharedObject<Buffers> {
     std::vector<std::shared_ptr<vk::HostVisibleBuffer>> textureMappingBuffer_;
     std::vector<std::shared_ptr<vk::HostVisibleBuffer>> exposureDataBuffer_;
     std::vector<std::shared_ptr<vk::HostVisibleBuffer>> lightMapUniformBuffer_;
+    std::vector<std::shared_ptr<vk::HostVisibleBuffer>> atmosphereLightBuffer_;
 
     std::shared_ptr<std::vector<std::shared_ptr<vk::DeviceLocalBuffer>>> importantIndexVertexBuffer_;
 

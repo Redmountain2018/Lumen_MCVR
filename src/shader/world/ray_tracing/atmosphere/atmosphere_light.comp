@@ -1,0 +1,36 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+#include "common/shared.hpp"
+#include "common/atmosphere_common.glsl"
+
+layout(set = 0, binding = 0) uniform sampler2D transLUT;
+
+layout(set = 0, binding = 1) uniform WorldUniform {
+    WorldUBO worldUBO;
+};
+
+layout(set = 0, binding = 2) uniform SkyUniform {
+    SkyUBO skyUBO;
+};
+
+layout(set = 0, binding = 3) buffer AtmosphereLight {
+    vec4 sunColor;
+    vec4 moonColor;
+} lightBuffer;
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+void main() {
+    float cameraHeight = float(worldUBO.cameraPos.y);
+    float r = max(skyUBO.Rg + cameraHeight + 70.0, skyUBO.Rg);
+
+    float muSun = clamp(skyUBO.sunDirection.y, -1.0, 1.0);
+    float muMoon = clamp(skyUBO.moonDirection.y, -1.0, 1.0);
+
+    vec3 sunTransmittance = sampleTransmittance(transLUT, r, muSun, skyUBO);
+    vec3 moonTransmittance = sampleTransmittance(transLUT, r, muMoon, skyUBO);
+
+    lightBuffer.sunColor = vec4(skyUBO.sunRadiance * sunTransmittance * skyUBO.envCelestial.z, 0.0);
+    lightBuffer.moonColor = vec4(skyUBO.moonRadiance * moonTransmittance * skyUBO.envCelestial.w, 0.0);
+}

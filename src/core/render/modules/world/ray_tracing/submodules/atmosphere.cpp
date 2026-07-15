@@ -28,6 +28,7 @@ void Atmosphere::build() {
     initFrameBuffers();
     initAtmLUTPipeline();
     initAtmCubeMapPipeline();
+    initAtmLightComputePipeline();
 
     for (int i = 0; i < size; i++) {
         contexts_[i] = AtmosphereContext::create(framework->contexts()[i], shared_from_this());
@@ -89,6 +90,48 @@ void Atmosphere::initDescriptorTables() {
 
         atmCubeMapImageSamplers_[i] = vk::Sampler::create(
             framework->device(), VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_LINEAR, VK_SAMPLER_ADDRESS_MODE_REPEAT);
+    }
+
+    initAtmLightComputeDescriptorTables();
+}
+
+void Atmosphere::initAtmLightComputeDescriptorTables() {
+    auto framework = framework_.lock();
+    uint32_t size = framework->swapchain()->imageCount();
+    atmLightDescriptorTables_.resize(size);
+
+    for (int i = 0; i < size; i++) {
+        atmLightDescriptorTables_[i] =
+            vk::DescriptorTableBuilder{}
+                .beginDescriptorLayoutSet() // set 0
+                .beginDescriptorLayoutSetBinding()
+                .defineDescriptorLayoutSetBinding({
+                    .binding = 0, // transLUT
+                    .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                    .descriptorCount = 1,
+                    .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+                })
+                .defineDescriptorLayoutSetBinding({
+                    .binding = 1, // world ubo
+                    .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                    .descriptorCount = 1,
+                    .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+                })
+                .defineDescriptorLayoutSetBinding({
+                    .binding = 2, // sky ubo
+                    .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                    .descriptorCount = 1,
+                    .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+                })
+                .defineDescriptorLayoutSetBinding({
+                    .binding = 3, // atmosphere light ssbo
+                    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                    .descriptorCount = 1,
+                    .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+                })
+                .endDescriptorLayoutSetBinding()
+                .endDescriptorLayoutSet()
+                .build(framework->device());
     }
 }
 
@@ -330,6 +373,19 @@ void Atmosphere::initAtmCubeMapPipeline() {
                               .build(framework->device());
 }
 
+void Atmosphere::initAtmLightComputePipeline() {
+    auto framework = framework_.lock();
+    std::filesystem::path shaderPath = Renderer::folderPath / "shaders";
+    atmLightCompShader_ = vk::Shader::create(
+        framework->device(),
+        (shaderPath / "world/ray_tracing/atmosphere/atmosphere_light_comp.spv").string());
+
+    atmLightComputePipeline_ = vk::ComputePipelineBuilder{}
+                                   .defineShader(atmLightCompShader_)
+                                   .definePipelineLayout(atmLightDescriptorTables_[0])
+                                   .build(framework->device());
+}
+
 AtmosphereContext::AtmosphereContext(std::shared_ptr<FrameworkContext> frameworkContext,
                                      std::shared_ptr<Atmosphere> atmosphere)
     : frameworkContext(frameworkContext),
@@ -405,6 +461,51 @@ void AtmosphereContext::render() {
         atmLUTImage->imageLayout() = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
         module->lutRendered_ = true;
+    }
+
+    // dispatch atmosphere light compute shader
+    {
+        VkPipelineStageFlags2 lutSrcStage = 0;
+        VkAccessFlags2 lutSrcAccess = 0;
+        chooseSrc(module->atmLUTImage_->imageLayout(),
+                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                  VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                  lutSrcStage, lutSrcAccess);
+        worldCommandBuffer->barriersBufferImage(
+            {}, {{
+                .srcStageMask = lutSrcStage,
+                .srcAccessMask = lutSrcAccess,
+                .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                .dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT,
+                .oldLayout = module->atmLUTImage_->imageLayout(),
+                .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                .srcQueueFamilyIndex = mainQueueIndex,
+                .dstQueueFamilyIndex = mainQueueIndex,
+                .image = module->atmLUTImage_,
+                .subresourceRange = vk::wholeColorSubresourceRange,
+            }});
+        module->atmLUTImage_->imageLayout() = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        auto atmLightTable = module->atmLightDescriptorTables_[frameworkContextPtr->frameIndex];
+        atmLightTable->bindSamplerImageForShader(module->atmLUTImageSampler_, module->atmLUTImage_, 0, 0);
+        atmLightTable->bindBuffer(buffers->worldUniformBuffer(), 0, 1);
+        atmLightTable->bindBuffer(buffers->skyUniformBuffer(), 0, 2);
+        atmLightTable->bindBuffer(buffers->atmosphereLightBuffer(), 0, 3);
+
+        worldCommandBuffer->bindDescriptorTable(atmLightTable, VK_PIPELINE_BIND_POINT_COMPUTE)
+            ->bindComputePipeline(module->atmLightComputePipeline_);
+        vkCmdDispatch(worldCommandBuffer->vkCommandBuffer(), 1, 1, 1);
+
+        // barrier: compute shader SSBO writes -> subsequent shader stage reads
+        {
+            vk::CommandBuffer::MemoryBarrier barrier;
+            barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            barrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+            barrier.dstStageMask = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR |
+                                   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+            barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+            worldCommandBuffer->barriersMemory({barrier});
+        }
     }
 
     // render atmosphere cube map

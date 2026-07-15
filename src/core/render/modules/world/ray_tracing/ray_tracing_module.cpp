@@ -314,6 +314,14 @@ void RayTracingModule::initDescriptorTables() {
                                   VK_SHADER_STAGE_ANY_HIT_BIT_KHR | VK_SHADER_STAGE_VERTEX_BIT |
                                   VK_SHADER_STAGE_FRAGMENT_BIT,
                 })
+                .defineDescriptorLayoutSetBinding({
+                    .binding = 4, // binding 4: atmosphere light ssbo
+                    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                    .descriptorCount = 1,
+                    .stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR |
+                                  VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_ANY_HIT_BIT_KHR |
+                                  VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                })
                 .endDescriptorLayoutSetBinding()
                 .endDescriptorLayoutSet()
                 .beginDescriptorLayoutSet() // set 3
@@ -655,6 +663,7 @@ void RayTracingModuleContext::render() {
     rayTracingDescriptorTable->bindBuffer(worldBuffer, 2, 0);
     rayTracingDescriptorTable->bindBuffer(buffers->lastWorldUniformBuffer(), 2, 1);
     rayTracingDescriptorTable->bindBuffer(buffers->skyUniformBuffer(), 2, 2);
+    rayTracingDescriptorTable->bindBuffer(buffers->atmosphereLightBuffer(), 2, 4);
 
     RayTracingPushConstant pushConstant{};
     pushConstant.numRayBounces = static_cast<int>(Renderer::options.rayBounces);

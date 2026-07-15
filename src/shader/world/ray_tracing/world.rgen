@@ -483,11 +483,15 @@ void main() {
             imageStore(motionVectorImage, pixel, vec4(motionVec, 0.0, 0.0));
         }
 
-        // sightly make the first non-mirror hit brighter
-        if (psrDepth == 1) {
-            // Remove artificial ambient light for pitch black shadows
-            float ambientFactor = 0.0;
-            mainRay.radiance += ambientFactor * mainRay.albedoValue.rgb * mainRay.albedoValue.a * mainRay.throughput;
+        // Ambient light for End and Nether dimensions
+        if (worldUBO.skyType == 2) {
+            vec3 endAmbientColor = mix(vec3(0.015, 0.002, 0.05), vec3(1.0), 0.05);
+            vec3 ambientRadiance = endAmbientColor * skyUBO.envSky.x * 1.0;
+            mainRay.radiance += ambientRadiance * mainRay.albedoValue.rgb * mainRay.albedoValue.a * mainRay.throughput;
+        } else if (worldUBO.skyType == 0) { // Nether
+            vec3 netherAmbientColor = mix(worldUBO.fogColor.rgb, vec3(1.0), 0.01);
+            vec3 ambientRadiance = netherAmbientColor * skyUBO.envSky.x * 0.1;
+            mainRay.radiance += ambientRadiance * mainRay.albedoValue.rgb * mainRay.albedoValue.a * mainRay.throughput;
         }
 
         psrHitPosition = mainRay.origin;
@@ -495,7 +499,12 @@ void main() {
         isFirstHitNoisy = mainRay.noisy > 0;
         if (isFirstHitNoisy) {
             // Boost emission intensity to 50.0 for visible glow in HDR
-            firstHitEmission = 50.0 * mainRay.albedoValue.rgb * firstHitMat.emission;
+            // Combine texture emission (specular alpha) with vertex emission (emission multiplier from slider)
+            float textureEmission = firstHitMat.emission;
+            int emissiveIdx = clamp(int(round(mainRay.albedoEmission)) - 1, -1, 31);
+            float uboMultiplier = emissiveIdx >= 0 ? worldUBO.emissionMultipliers[emissiveIdx / 4][emissiveIdx % 4] : 1.0;
+            float totalEmission = textureEmission * uboMultiplier;
+            firstHitEmission = 50.0 * mainRay.albedoValue.rgb * totalEmission;
             if (mainRay.lobeType == 0 || mainRay.lobeType == 2) { // Diffuse OR Refraction
                 isFirstHitDiffuse = true;
                 firstHitDirectRadiance = mainRay.directLightRadiance;
@@ -624,7 +633,8 @@ void main() {
                     applyFog(mainRay.radiance, len, worldUBO.fogStart, densityAir, densityFog, fogRadiance);
             }
         } else if (worldUBO.skyType == 2) { // End
-            vec3 fogRadiance = worldUBO.fogColor.rgb * primaryCloudTransmittance;
+            vec3 endFogColor = mix(vec3(0.015, 0.002, 0.05), vec3(1.0), 0.05);
+            vec3 fogRadiance = endFogColor * skyUBO.envSky.x * 1.0 * primaryCloudTransmittance;
             mainRay.radiance = applyFog(mainRay.radiance, surfaceDepth, worldUBO.fogStart, densityAir, densityFog,
                                         fogRadiance);
         }

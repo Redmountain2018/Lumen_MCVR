@@ -247,6 +247,8 @@ namespace Data {
         T_UINT endPortalTextureID;
         T_UINT rippleTextureID;
         T_UINT pad5;
+
+        T_VEC4 emissionMultipliers[8];
         
     };
 
@@ -368,7 +370,12 @@ namespace Data {
         T_FLOAT brightnessFactor;
         T_FLOAT pad0;
     };
+
 #ifdef __cplusplus
+    struct AtmosphereLight {
+        T_VEC4 sunColor;
+        T_VEC4 moonColor;
+    };
 }; // namespace Data
 #endif
 #ifdef __cplusplus

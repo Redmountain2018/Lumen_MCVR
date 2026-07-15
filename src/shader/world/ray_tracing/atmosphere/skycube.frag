@@ -2,6 +2,7 @@
 #extension GL_GOOGLE_include_directive : require
 
 #include "common/shared.hpp"
+#include "common/atmosphere_common.glsl"
 
 layout(set = 1, binding = 0) uniform WorldUniform {
     WorldUBO worldUBO;
@@ -46,23 +47,8 @@ float phaseMieHG(float cosTheta, float g) {
     return (1.0 - g2) / (4.0 * PI * denom);
 }
 
-vec2 transmittanceUv(float r, float mu, SkyUBO ubo) {
-    float u = clamp(mu * 0.5 + 0.5, 0.0, 1.0);
-    float v = clamp((r - ubo.Rg) / (ubo.Rt - ubo.Rg), 0.0, 1.0);
-    return vec2(u, v);
-}
-
 float densityExp(float h, float H) {
     return exp(-max(h, 0.0) / H);
-}
-
-vec3 sampleTransmittance(float r, float mu) {
-    vec2 uv = transmittanceUv(r, mu, skyUBO);
-
-    vec2 invSize = 1.0 / vec2(textureSize(transLUT, 0));
-    uv = clamp(uv, 0.5 * invSize, 1.0 - 0.5 * invSize);
-
-    return texture(transLUT, uv).rgb;
 }
 
 vec3 integrateSingleScattering(vec3 ro, vec3 rd, bool isSun) {
@@ -103,7 +89,7 @@ vec3 integrateSingleScattering(vec3 ro, vec3 rd, bool isSun) {
 
         vec3 up = x / r;
         float muS = dot(up, normalize(isSun ? skyUBO.sunDirection : skyUBO.moonDirection));
-        vec3 T_sun = sampleTransmittance(r, muS);
+        vec3 T_sun = sampleTransmittance(transLUT, r, muS, skyUBO);
 
         vec3 S = sigmaS_R * pr + (sigmaS_M * (pm));
         vec3 sourceRadiance = isSun

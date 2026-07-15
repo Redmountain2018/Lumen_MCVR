@@ -183,15 +183,21 @@ void PostRenderModule::initDescriptorTables() {
                                        .descriptorCount = 1,
                                        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                                    })
-                                   .defineDescriptorLayoutSetBinding({
-                                       .binding = 2, // binding 2: light map ubo
-                                       .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                                       .descriptorCount = 1,
-                                       .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                                   })
-                                   .endDescriptorLayoutSetBinding()
-                                   .endDescriptorLayoutSet()
-                                   .beginDescriptorLayoutSet() // set 2
+                                    .defineDescriptorLayoutSetBinding({
+                                        .binding = 2, // binding 2: light map ubo
+                                        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                        .descriptorCount = 1,
+                                        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                    })
+                                    .defineDescriptorLayoutSetBinding({
+                                        .binding = 3, // binding 3: atmosphere light ssbo
+                                        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                        .descriptorCount = 1,
+                                        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                    })
+                                    .endDescriptorLayoutSetBinding()
+                                    .endDescriptorLayoutSet()
+                                    .beginDescriptorLayoutSet() // set 2
                                    .beginDescriptorLayoutSetBinding()
                                    .defineDescriptorLayoutSetBinding({
                                        .binding = 0, // binding 0: mapping
@@ -891,6 +897,7 @@ void PostRenderModuleContext::render() {
     descriptorTable->bindBuffer(buffers->worldUniformBuffer(), 1, 0);
     descriptorTable->bindBuffer(buffers->skyUniformBuffer(), 1, 1);
     descriptorTable->bindBuffer(buffers->lightMapUniformBuffer(), 1, 2);
+    descriptorTable->bindBuffer(buffers->atmosphereLightBuffer(), 1, 3);
     descriptorTable->bindBuffer(Renderer::instance().buffers()->textureMappingBuffer(), 2, 0);
 
     // render light map

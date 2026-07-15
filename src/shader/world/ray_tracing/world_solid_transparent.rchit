@@ -92,6 +92,10 @@ layout(set = 2, binding = 2) uniform SkyUniform {
     SkyUBO skyUBO;
 };
 
+layout(set = 2, binding = 3) uniform LightMapUniform {
+    LightMapUBO lightMapUBO;
+};
+
 layout(std430, buffer_reference, buffer_reference_align = 8) readonly buffer VertexBuffer {
     PBRTriangle vertices[];
 }
@@ -996,8 +1000,12 @@ void main() {
 
     // add glowing radiance
     float factor = mainRay.index == 0 ? 1.0 : 16.0 * skyUBO.hdrRadianceScale;
-    vec3 emissionRadiance = factor * tint * mat.emission * mainRay.throughput;
-    emissionRadiance += tint * albedoEmission * mainRay.throughput;
+    int emissiveIdx = clamp(int(round(albedoEmission)) - 1, -1, 31);
+    float uboMul = emissiveIdx >= 0 ? worldUbo.emissionMultipliers[emissiveIdx / 4][emissiveIdx % 4] : 1.0;
+    vec3 emissionRadiance = factor * tint * mat.emission * uboMul * mainRay.throughput;
+    if (mat.emission > 0.0) {
+        emissionRadiance += tint * uboMul * mainRay.throughput;
+    }
     mainRay.radiance += emissionRadiance;
 
     mainRay.hitT = gl_HitTEXT;
@@ -1124,6 +1132,18 @@ void main() {
             mainRay.directLightRadiance += finalSpecular;
         }
 
+    } else if (worldUbo.skyType == 2) { // End
+        vec3 endAmbientColor = mix(vec3(0.015, 0.002, 0.05), vec3(1.0), 0.05);
+        vec3 ambientRadiance = endAmbientColor * skyUBO.envSky.x * 1.0;
+        vec3 ambientTerm = ambientRadiance * tint * mainRay.throughput;
+        mainRay.radiance += ambientTerm;
+        mainRay.directLightRadiance += ambientTerm;
+    } else if (worldUbo.skyType == 0) { // Nether
+        vec3 netherAmbientColor = mix(worldUbo.fogColor.rgb, vec3(1.0), 0.01);
+        vec3 ambientRadiance = netherAmbientColor * skyUBO.envSky.x * 0.1;
+        vec3 ambientTerm = ambientRadiance * tint * mainRay.throughput;
+        mainRay.radiance += ambientTerm;
+        mainRay.directLightRadiance += ambientTerm;
     }
 
     mainRay.instanceIndex = instanceID;
@@ -1133,6 +1153,7 @@ void main() {
     mainRay.worldPos = worldPos;
     mainRay.normal = normal;
     mainRay.albedoValue = albedoValue;
+    mainRay.albedoEmission = albedoEmission;
     mainRay.specularValue = specularValue;
     mainRay.normalValue = normalValue;
     mainRay.flagValue = flagValue;

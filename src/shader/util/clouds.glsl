@@ -1,6 +1,11 @@
 #ifndef CLOUDS_GLSL
 #define CLOUDS_GLSL
 #define CLOUDS_BLOCKY
+
+layout(set = 2, binding = 4) buffer AtmosphereLight {
+    vec4 sunColor;
+    vec4 moonColor;
+} atmosphereLight;
 #define CLOUD_SCALE_BASE 0.02   // 噪声输入缩放基础值
 #define CLOUD_SIZE_SCALE_BASE 1.0 // 坐标缩放因子基础值
 #define CLOUD_SPEED 1.5
@@ -619,10 +624,10 @@ vec3 cloudMainLightRadiance(SkyUBO skyUBO, out vec3 toLight) {
     // Use moon when sun is below horizon.
     if (sunDir.y > 0.0) {
         toLight = sunDir;
-        radiance = (skyUBO.sunRadiance * skyUBO.envCelestial.z * mix(skyUBO.sunColor, vec3(0.3), skyUBO.rainGradient));
+        radiance = atmosphereLight.sunColor.xyz;
     } else {
         toLight = normalize(skyUBO.moonDirection);
-        radiance = (skyUBO.moonRadiance * skyUBO.envCelestial.w) * 0.05;
+        radiance = atmosphereLight.moonColor.xyz * 0.05;
     }
 
     float threshold = 0.3;

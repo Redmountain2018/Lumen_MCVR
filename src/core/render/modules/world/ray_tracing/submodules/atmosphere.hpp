@@ -34,6 +34,8 @@ class Atmosphere : public SharedObject<Atmosphere> {
     void initFrameBuffers();
     void initAtmLUTPipeline();
     void initAtmCubeMapPipeline();
+    void initAtmLightComputeDescriptorTables();
+    void initAtmLightComputePipeline();
 
   private:
     bool lutRendered_ = false;
@@ -58,6 +60,10 @@ class Atmosphere : public SharedObject<Atmosphere> {
     std::shared_ptr<vk::RenderPass> atmCubeMapRenderPass_;
     std::vector<std::array<std::shared_ptr<vk::Framebuffer>, 6>> atmCubeMapFramebuffers_;
     std::shared_ptr<vk::GraphicsPipeline> atmCubeMapPipeline_;
+
+    std::shared_ptr<vk::Shader> atmLightCompShader_;
+    std::shared_ptr<vk::ComputePipeline> atmLightComputePipeline_;
+    std::vector<std::shared_ptr<vk::DescriptorTable>> atmLightDescriptorTables_;
 
     std::vector<std::shared_ptr<AtmosphereContext>> contexts_;
 };

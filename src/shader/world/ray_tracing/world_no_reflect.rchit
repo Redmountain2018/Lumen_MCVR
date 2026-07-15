@@ -197,6 +197,7 @@ void main() {
     mainRay.worldPos = worldPos;
     mainRay.normal = vec3(0);
     mainRay.albedoValue = albedoValue;
+    mainRay.albedoEmission = albedoEmission;
     mainRay.specularValue = specularValue;
     mainRay.normalValue = normalValue;
     mainRay.flagValue = flagValue;

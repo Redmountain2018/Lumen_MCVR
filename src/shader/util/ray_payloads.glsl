@@ -62,6 +62,7 @@ struct PrimaryRay {
     T_VEC4 specularValue;
     T_VEC4 normalValue;
     T_IVEC4 flagValue;
+    T_FLOAT albedoEmission;
     T_UINT noisy;
     T_UINT lobeType;
     T_VEC3 directLightRadiance;
